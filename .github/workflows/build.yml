@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  pull_request:
+    paths-ignore:
+    - '**.md'
+  workflow_dispatch:
+  push:
+    tags:
+    - 'v*'
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Building xcframeworks
+    runs-on: macos-26
+    timeout-minutes: 120
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        persist-credentials: false
+
+    - name: Toolchain and sources
+      run: |
+        xcodebuild -version
+        df -h .
+        brew install autoconf automake libtool pkgconf
+        git submodule update --init --depth 1 harfbuzz
+        git submodule status harfbuzz
+
+    - name: Build libraries
+      run: |
+        bash build_libpng.sh
+        bash build_freetype.sh
+
+    - name: Package, verify slices and checksum
+      run: |
+        mkdir -p .build
+        echo '| xcframework | slice | archs |' >> "$GITHUB_STEP_SUMMARY"
+        echo '| --- | --- | --- |' >> "$GITHUB_STEP_SUMMARY"
+        for name in libpng freetype harfbuzz; do
+          xcodebuild -create-xcframework \
+            -framework "build/Release-iphoneos/$name.framework" \
+            -framework "build/Release-iphonesimulator/$name.framework" \
+            -output ".build/$name.xcframework"
+          for slice in ios-arm64 ios-x86_64-simulator; do
+            bin=".build/$name.xcframework/$slice/$name.framework/$name"
+            archs=$(lipo -archs "$bin")
+            case "$slice:$archs" in
+              ios-arm64:arm64|ios-x86_64-simulator:x86_64) ;;
+              *) echo "::error::Unexpected slice $slice: $archs"; exit 1 ;;
+            esac
+            echo "| $name | $slice | $archs |" >> "$GITHUB_STEP_SUMMARY"
+            otool -L "$bin"
+            if otool -L "$bin" | grep $'\t' | grep -E '/opt/homebrew|/usr/local|/Users/runner'; then exit 1; fi
+          done
+          (cd .build && zip --symlinks -rq "$name.xcframework.zip" "$name.xcframework")
+          sum=$(swift package compute-checksum ".build/$name.xcframework.zip")
+          echo "$sum  $name.xcframework.zip" >> .build/checksums.txt
+        done
+        cp .build/checksums.txt .build/release.md
+        du -sh build .build
+        df -h .
+
+    - uses: actions/upload-artifact@v7
+      with:
+        name: xcframeworks
+        include-hidden-files: true
+        if-no-files-found: error
+        path: |
+          .build/*.xcframework.zip
+          .build/checksums.txt
+          .build/release.md
+
+  release:
+    name: Publishing release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') && github.repository == 'holzschu/Python-aux'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/download-artifact@v8
+      with:
+        name: xcframeworks
+        path: dist
+
+    - name: Create Release
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            dist/*.xcframework.zip dist/checksums.txt
+        else
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --title "Release $GITHUB_REF_NAME" --notes-file dist/release.md \
+            dist/*.xcframework.zip dist/checksums.txt
+        fi

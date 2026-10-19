@@ -1,23 +1,24 @@
 #!/bin/bash
+set -euo pipefail
 
-# Required with Xcode 12 beta:
-export M4=$(xcrun -f m4)
 OSX_SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
 IOS_SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
 SIM_SDKROOT=$(xcrun --sdk iphonesimulator --show-sdk-path)
 
-curl -OL https://download.sourceforge.net/libpng/libpng-1.6.37.tar.gz
+curl --fail --location --retry 3 -O https://download.sourceforge.net/libpng/libpng-1.6.37.tar.gz
+echo 'daeb2620d829575513e35fecc83f0d3791a620b9b93d800b763542ece9390fb4  libpng-1.6.37.tar.gz' | shasum -a 256 -c -
 tar xzf libpng-1.6.37.tar.gz
 rm libpng-1.6.37.tar.gz
-export DYLD_ROOT_PATH\=$(xcrun --sdk iphonesimulator --show-sdk-path)
+# Use the standard math.h path on modern Apple SDKs.
+patch -d libpng-1.6.37 -p1 < patches/libpng-math.patch
 
 # libpng
 pushd libpng-1.6.37
-make distclean
+if [ -f Makefile ]; then make distclean; fi
 ./configure CC=clang CXX=clang++ \
-	CFLAGS="-arch arm64 -miphoneos-version-min=11.0 -isysroot ${IOS_SDKROOT} -fembed-bitcode" \
-	CPPFLAGS="-arch arm64 -miphoneos-version-min=11.0 -isysroot ${IOS_SDKROOT} -fembed-bitcode" \
-	CXXFLAGS="-arch arm64 -miphoneos-version-min=11.0 -isysroot ${IOS_SDKROOT} -fembed-bitcode" \
+	CFLAGS="-arch arm64 -miphoneos-version-min=11.0 -isysroot ${IOS_SDKROOT}" \
+	CPPFLAGS="-arch arm64 -miphoneos-version-min=11.0 -isysroot ${IOS_SDKROOT}" \
+	CXXFLAGS="-arch arm64 -miphoneos-version-min=11.0 -isysroot ${IOS_SDKROOT}" \
 	--build=x86_64-apple-darwin --host=armv8-apple-darwin cross_compiling=yes
 make -j4 --quiet
 # We're going to need them:
@@ -42,11 +43,11 @@ plutil -replace CFBundleName -string $binary ${FRAMEWORK_DIR}/Info.plist
 plutil -replace CFBundleIdentifier -string Nicolas-Holzschuch.$binary  ${FRAMEWORK_DIR}/Info.plist
 install_name_tool -id @rpath/$binary.framework/$binary   ${FRAMEWORK_DIR}/$binary
 pushd libpng-1.6.37
-make distclean
+if [ -f Makefile ]; then make distclean; fi
 ./configure CC=clang CXX=clang++ \
-	CFLAGS="-arch x86_64 -mios-simulator-version-min=11.0 -isysroot ${SIM_SDKROOT} -fembed-bitcode" \
-	CPPFLAGS="-arch x86_64 -mios-simulator-version-min=11.0 -isysroot ${SIM_SDKROOT} -fembed-bitcode" \
-	CXXFLAGS="-arch x86_64 -mios-simulator-version-min=11.0 -isysroot ${SIM_SDKROOT} -fembed-bitcode" \
+	CFLAGS="-arch x86_64 -mios-simulator-version-min=11.0 -isysroot ${SIM_SDKROOT}" \
+	CPPFLAGS="-arch x86_64 -mios-simulator-version-min=11.0 -isysroot ${SIM_SDKROOT}" \
+	CXXFLAGS="-arch x86_64 -mios-simulator-version-min=11.0 -isysroot ${SIM_SDKROOT}" \
 	--build=x86_64-apple-darwin --host=x86_64-apple-darwin cross_compiling=yes
 make -j4 --quiet
 # We're going to need them:
