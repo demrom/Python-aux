@@ -30,9 +30,9 @@ jobs:
       run: |
         xcodebuild -version
         df -h .
-        brew install autoconf automake libtool pkgconf
-        git submodule update --init --depth 1 harfbuzz
-        git submodule status harfbuzz
+        brew install autoconf automake libtool pkgconf cmake
+        git submodule update --init --depth 1 harfbuzz libxslt
+        git submodule status harfbuzz libxslt
 
     - name: Build libraries
       run: |
@@ -40,8 +40,9 @@ jobs:
         nice -n 15 bash build_freetype.sh
         nice -n 15 bash build_libjpg.sh
         nice -n 15 bash build_libtiff.sh
+        nice -n 15 bash build_libxslt.sh
 
-    - name: Link codec consumers and run on arm64 Simulator
+    - name: Link codec and XSLT consumers and run on arm64 Simulator
       run: |
         mkdir -p .build
         for arch in arm64 x86_64; do
@@ -51,21 +52,30 @@ jobs:
             libtiff.xcframework/ios-arm64_x86_64-simulator/libtiff.a \
             libjpeg.xcframework/ios-arm64_x86_64-simulator/libjpeg.a -lz -o ".build/codecs-$arch"
         done
+        for arch in arm64 x86_64; do
+          xcrun --sdk iphonesimulator clang -target "$arch-apple-ios14.0-simulator" tests/xslt.c \
+            -I "$(xcrun --sdk iphonesimulator --show-sdk-path)/usr/include/libxml2" \
+            -I libxslt.xcframework/ios-arm64_x86_64-simulator/Headers \
+            -I libexslt.xcframework/ios-arm64_x86_64-simulator/Headers \
+            libexslt.xcframework/ios-arm64_x86_64-simulator/libexslt.a \
+            libxslt.xcframework/ios-arm64_x86_64-simulator/libxslt.a -lxml2 -o ".build/xslt-$arch"
+        done
         runtime=$(xcrun simctl list runtimes -j | jq -r '.runtimes[] | select(.isAvailable and (.identifier | contains("iOS"))) | .identifier' | tail -n 1)
         device=$(xcrun simctl create Python-aux-codecs com.apple.CoreSimulator.SimDeviceType.iPhone-17 "$runtime")
         trap 'xcrun simctl shutdown "$device"; xcrun simctl delete "$device"' EXIT
         xcrun simctl boot "$device"
         xcrun simctl bootstatus "$device" -b
         xcrun simctl spawn "$device" "$PWD/.build/codecs-arm64"
+        xcrun simctl spawn "$device" "$PWD/.build/xslt-arm64"
 
     - name: Package, verify slices and checksum
       run: |
         mkdir -p .build
-        cp -R libjpeg.xcframework libtiff.xcframework .build/
+        cp -R libjpeg.xcframework libtiff.xcframework libxslt.xcframework libexslt.xcframework .build/
         echo '| xcframework | slice | archs |' >> "$GITHUB_STEP_SUMMARY"
         echo '| --- | --- | --- |' >> "$GITHUB_STEP_SUMMARY"
-        for name in libpng freetype harfbuzz libjpeg libtiff; do
-          if [[ $name != libjpeg && $name != libtiff ]]; then
+        for name in libpng freetype harfbuzz libjpeg libtiff libxslt libexslt; do
+          if [[ $name != libjpeg && $name != libtiff && $name != libxslt && $name != libexslt ]]; then
             xcodebuild -create-xcframework \
               -framework "build/Release-iphoneos/$name.framework" \
               -framework "build/Release-iphonesimulator/$name.framework" \
@@ -77,7 +87,7 @@ jobs:
             [{id: "ios-arm64", archs: ["arm64"]}, {id: "ios-arm64_x86_64-simulator", archs: ["arm64", "x86_64"]}]' >/dev/null
           for slice in ios-arm64 ios-arm64_x86_64-simulator; do
             bin="$xcf/$slice/$name.framework/$name"
-            if [[ $name == libjpeg || $name == libtiff ]]; then
+            if [[ $name == libjpeg || $name == libtiff || $name == libxslt || $name == libexslt ]]; then
               bin="$xcf/$slice/$name.a"
             fi
             archs=$(lipo -archs "$bin")
@@ -86,7 +96,7 @@ jobs:
               *) echo "::error::Unexpected slice $slice: $archs"; exit 1 ;;
             esac
             echo "| $name | $slice | $archs |" >> "$GITHUB_STEP_SUMMARY"
-            if [[ $name == libjpeg || $name == libtiff ]]; then
+            if [[ $name == libjpeg || $name == libtiff || $name == libxslt || $name == libexslt ]]; then
               # Inspect every archive member; the framework audit accepts dylibs only.
               expected_platform=2
               max_minos=11
