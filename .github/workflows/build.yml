@@ -78,9 +78,99 @@ jobs:
           .build/checksums.txt
           .build/release.md
 
+  fortran:
+    name: OpenBLAS with Fortran LAPACK
+    runs-on: macos-26
+    timeout-minutes: 120
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        persist-credentials: false
+
+    - name: Toolchain and pinned sources
+      run: |
+        brew update
+        brew install flang cmake ninja
+        flang --version
+        xcodebuild -version
+        git submodule update --init --depth 1 OpenBLAS
+        git clone --filter=blob:none --sparse --depth 1 --branch llvmorg-23.1.4 https://github.com/llvm/llvm-project.git .build/llvm
+        git -C .build/llvm sparse-checkout set flang-rt cmake llvm/cmake llvm/include/llvm/Frontend flang/include flang/cmake runtimes llvm/utils/llvm-lit flang/lib/Decimal libc/shared libc/src/__support
+        curl -fL --retry 3 https://raw.githubusercontent.com/Reference-LAPACK/lapack/v3.12.1/SRC/dpotrf.f -o .build/dpotrf.f
+        echo 'ea50dbb7c75ca65c4e388ec63b00bc0f3ebbaf9d8d358644d727319007df972a  .build/dpotrf.f' | shasum -a 256 -c -
+
+    - name: Compile LAPACK objects and build matching runtimes
+      run: |
+        nice -n 15 flang -target arm64-apple-ios14.0 -c .build/dpotrf.f -o .build/dpotrf-ios.o
+        nice -n 15 flang -target arm64-apple-ios14.0-simulator -c .build/dpotrf.f -o .build/dpotrf-simulator.o
+        nice -n 15 flang -target x86_64-apple-ios14.0-simulator -c .build/dpotrf.f -o .build/dpotrf-simulator-x86_64.o
+        xcrun vtool -show-build .build/dpotrf-simulator-x86_64.o
+        xcrun vtool -show-build .build/dpotrf-ios.o
+        xcrun vtool -show-build .build/dpotrf-simulator.o
+        nice -n 15 bash build_flang_runtime.sh .build/llvm .build/runtime
+
+    - name: Build and link OpenBLAS for both platforms
+      run: nice -n 15 bash build_openblas_flang.sh .build/runtime .build/openblas
+
+    - name: Run LAPACK on Simulator
+      run: |
+        framework="$PWD/.build/openblas/iphonesimulator-universal"
+        for arch in arm64 x86_64; do
+          nice -n 15 flang -target "$arch-apple-ios14.0-simulator" -c tests/runtime.f90 -o ".build/runtime-probe-$arch.o"
+          xcrun --sdk iphonesimulator clang -target "$arch-apple-ios14.0-simulator" tests/lapack.c \
+            -include "$framework/openblas.framework/Headers/cblas.h" \
+            ".build/runtime-probe-$arch.o" \
+            -F"$framework" -framework openblas -F"$PWD/.build/runtime/iphonesimulator-universal" -framework flang_rt \
+            -Wl,-rpath,"$framework" -Wl,-rpath,"$PWD/.build/runtime/iphonesimulator-universal" -o ".build/lapack-test-$arch"
+        done
+        runtime=$(xcrun simctl list runtimes -j | jq -r '.runtimes[] | select(.isAvailable and (.identifier | contains("iOS"))) | .identifier' | tail -n 1)
+        device=$(xcrun simctl create OpenBLAS-LAPACK com.apple.CoreSimulator.SimDeviceType.iPhone-17 "$runtime")
+        trap 'xcrun simctl shutdown "$device"; xcrun simctl delete "$device"' EXIT
+        xcrun simctl boot "$device"
+        xcrun simctl bootstatus "$device" -b
+        xcrun simctl spawn "$device" "$PWD/.build/lapack-test-arm64"
+
+    - name: Package and checksum
+      run: |
+        xcodebuild -create-xcframework \
+          -framework "$PWD/.build/openblas/iphoneos/openblas.framework" \
+          -framework "$PWD/.build/openblas/iphonesimulator-universal/openblas.framework" \
+          -output .build/openblas.xcframework
+        xcodebuild -create-xcframework \
+          -framework "$PWD/.build/runtime/iphoneos/flang_rt.framework" \
+          -framework "$PWD/.build/runtime/iphonesimulator-universal/flang_rt.framework" \
+          -output .build/flang_rt.xcframework
+        for name in openblas flang_rt; do
+          for slice in ios-arm64 ios-arm64_x86_64-simulator; do
+            bin=".build/$name.xcframework/$slice/$name.framework/$name"
+            if [[ $slice == ios-arm64 ]]; then
+              test "$(lipo -archs "$bin")" = arm64
+            else
+              test "$(lipo -archs "$bin")" = 'x86_64 arm64'
+            fi
+            xcrun vtool -show-build "$bin"
+            otool -L "$bin"
+            if otool -L "$bin" | grep $'\t' | grep -E '/opt/homebrew|/usr/local|/Users/runner'; then exit 1; fi
+          done
+        done
+        for name in openblas flang_rt; do
+          (cd .build && zip --symlinks -rq "$name.xcframework.zip" "$name.xcframework")
+          sum=$(swift package compute-checksum ".build/$name.xcframework.zip")
+          echo "$sum  $name.xcframework.zip"
+        done > .build/openblas-checksums.txt
+
+    - uses: actions/upload-artifact@v7
+      with:
+        name: openblas
+        if-no-files-found: error
+        path: |
+          .build/openblas.xcframework.zip
+          .build/flang_rt.xcframework.zip
+          .build/openblas-checksums.txt
+
   release:
     name: Publishing release
-    needs: build
+    needs: [build, fortran]
     if: startsWith(github.ref, 'refs/tags/v') && github.repository == 'holzschu/Python-aux'
     runs-on: ubuntu-latest
     permissions:
@@ -88,18 +178,21 @@ jobs:
     steps:
     - uses: actions/download-artifact@v8
       with:
-        name: xcframeworks
+        pattern: '*'
+        merge-multiple: true
         path: dist
 
     - name: Create Release
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
+        cat dist/openblas-checksums.txt >> dist/checksums.txt
+        cp dist/checksums.txt dist/release.md
         if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
           gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
             dist/*.xcframework.zip dist/checksums.txt
         else
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-            --verify-tag --title "Release $GITHUB_REF_NAME" --notes-file dist/release.md \
+            --verify-tag --latest=false --title "Release $GITHUB_REF_NAME" --notes-file dist/release.md \
             dist/*.xcframework.zip dist/checksums.txt
         fi

@@ -33,3 +33,11 @@ CI builds the libpng, freetype and harfbuzz xcframeworks on pull requests (excep
 To release from this repository, push a `v*` tag, then wait for the "Publishing release" job. It creates a release with the generated notes, or adds the assets to an existing release while keeping its notes. Uploads fail if an asset already exists; published files are never overwritten. Only the release job has write permission.
 
 Update each consuming `binaryTarget` URL and checksum with the new release and the values in `checksums.txt`.
+
+## OpenBLAS with Fortran LAPACK
+
+The Fortran CI job builds arm64 device and universal arm64/x86_64 Simulator frameworks with Homebrew Flang 23.1.4 and matching LLVM runtime sources. It compiles LAPACK's `dpotrf.f` for each platform, links OpenBLAS against a shared `flang_rt.framework`, and runs Cholesky, linear-system and Fortran `dsyev` eigenvalue checks on the arm64 Simulator. The x86_64 Simulator consumer is compiled and linked only. The `openblas` artifact contains `openblas.xcframework.zip`, `flang_rt.xcframework.zip` and their SwiftPM checksums; tag releases include them alongside the other libraries. Embed both frameworks in consuming apps.
+
+Run `nice -n 15 bash build_flang_runtime.sh <llvm-source> <runtime-build>`, then `nice -n 15 bash build_openblas_flang.sh <runtime-build> <openblas-build>`. The workflow lists the LLVM sparse-checkout paths and pinned revision. Both scripts use four build jobs. The x86_64 Simulator uses this revision's CORE2 cross-build configuration. The runtime patch makes command-line execution report unsupported on iOS and rejects executable trampolines there. LAPACK uses neither facility.
+
+This build includes the Fortran BLAS and LAPACK APIs and CBLAS. LAPACKE is disabled because this OpenBLAS revision's LAPACKE headers disagree with its deprecated wrappers. NumPy and SciPy use the Fortran LAPACK API.
