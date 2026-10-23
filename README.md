@@ -5,7 +5,7 @@ Auxiliary libraries needed for Python3 compilation, precompiled (libpng, harfbuz
 What we have:
 - [libpng](http://www.libpng.org/pub/png/libpng.html) (1.6.37)
 - [libffi](https://github.com/libffi/libffi) (main branch)
-- [libzmq](https://github.com/zeromq/libzmq) (zeroMQ) (main branch)
+- [libzmq](https://github.com/zeromq/libzmq) (ZeroMQ 4.3.5)
 - [OpenBLAS](https://github.com/xianyi/OpenBLAS) (develop branch)
 - [freetype](https://www.freetype.org) (2.10.2)
 - [harfbuzz](https://github.com/harfbuzz/harfbuzz) (main branch)
@@ -31,6 +31,8 @@ For use in your own repository, update the hash sums in `Package.swift`, publish
 CI builds libpng, FreeType, HarfBuzz, JPEG and TIFF on pull requests (except Markdown-only changes) and manual runs. Each xcframework contains arm64 device and universal arm64/x86_64 Simulator slices. JPEG and TIFF remain static libraries. It uploads the ZIPs, `checksums.txt` and `release.md` in the `xcframeworks` artifact. The build summary lists each slice and its architectures.
 
 Run `bash build_libjpg.sh` before `bash build_libtiff.sh`. TIFF retains its built-in codecs and Deflate, and enables JPEG and old JPEG using the companion library. CI links the codec consumer for both Simulator architectures and runs it on arm64. Device and Intel Simulator libraries retain iOS 11; arm64 Simulator requires iOS 14.
+
+Run `nice -n 15 bash build_libzmq.sh` to build the pinned ZeroMQ 4.3.5 shared library for iOS 14 and package it as `libzmq.xcframework`. CI includes its ZIP and checksum in the `xcframeworks` artifact. CURVE, libsodium, encrypted WebSockets and draft APIs are disabled. The public C consumer sends exact Unicode bytes through PAIR sockets twice, terminates each context and checks that descriptor counts return to baseline on arm64 Simulator. The Intel Simulator consumer is compiled and linked only.
 
 To release from this repository, push a `v*` tag, then wait for the "Publishing release" job. It creates a release with the generated notes, or adds the assets to an existing release while keeping its notes. Uploads fail if an asset already exists; published files are never overwritten. Only the release job has write permission.
 

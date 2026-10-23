@@ -53,3 +53,7 @@ dkms.conf
 
 # GIS runtime data archive
 /proj-data.tar.gz
+
+# ZeroMQ build products
+/.build/libzmq/
+/libzmq.xcframework/

@@ -31,8 +31,8 @@ jobs:
         xcodebuild -version
         df -h .
         brew install autoconf automake libtool pkgconf cmake
-        git submodule update --init --depth 1 harfbuzz libxslt
-        git submodule status harfbuzz libxslt
+        git submodule update --init --depth 1 harfbuzz libxslt libzmq
+        git submodule status harfbuzz libxslt libzmq
 
     - name: Build libraries
       run: |
@@ -41,8 +41,9 @@ jobs:
         nice -n 15 bash build_libjpg.sh
         nice -n 15 bash build_libtiff.sh
         nice -n 15 bash build_libxslt.sh
+        nice -n 15 bash build_libzmq.sh
 
-    - name: Link codec and XSLT consumers and run on arm64 Simulator
+    - name: Link codec, XSLT and ZeroMQ consumers and run on arm64 Simulator
       run: |
         mkdir -p .build
         for arch in arm64 x86_64; do
@@ -59,6 +60,10 @@ jobs:
             -I libexslt.xcframework/ios-arm64_x86_64-simulator/Headers \
             libexslt.xcframework/ios-arm64_x86_64-simulator/libexslt.a \
             libxslt.xcframework/ios-arm64_x86_64-simulator/libxslt.a -lxml2 -o ".build/xslt-$arch"
+          framework="$PWD/libzmq.xcframework/ios-arm64_x86_64-simulator"
+          xcrun --sdk iphonesimulator clang -target "$arch-apple-ios14.0-simulator" tests/zmq.c \
+            -I"$framework/libzmq.framework/Headers" -F"$framework" -framework libzmq \
+            -Wl,-rpath,"$framework" -o ".build/zmq-$arch"
         done
         runtime=$(xcrun simctl list runtimes -j | jq -r '.runtimes[] | select(.isAvailable and (.identifier | contains("iOS"))) | .identifier' | tail -n 1)
         device=$(xcrun simctl create Python-aux-codecs com.apple.CoreSimulator.SimDeviceType.iPhone-17 "$runtime")
@@ -67,15 +72,16 @@ jobs:
         xcrun simctl bootstatus "$device" -b
         xcrun simctl spawn "$device" "$PWD/.build/codecs-arm64"
         xcrun simctl spawn "$device" "$PWD/.build/xslt-arm64"
+        xcrun simctl spawn "$device" "$PWD/.build/zmq-arm64"
 
     - name: Package, verify slices and checksum
       run: |
         mkdir -p .build
-        cp -R libjpeg.xcframework libtiff.xcframework libxslt.xcframework libexslt.xcframework .build/
+        cp -R libjpeg.xcframework libtiff.xcframework libxslt.xcframework libexslt.xcframework libzmq.xcframework .build/
         echo '| xcframework | slice | archs |' >> "$GITHUB_STEP_SUMMARY"
         echo '| --- | --- | --- |' >> "$GITHUB_STEP_SUMMARY"
-        for name in libpng freetype harfbuzz libjpeg libtiff libxslt libexslt; do
-          if [[ $name != libjpeg && $name != libtiff && $name != libxslt && $name != libexslt ]]; then
+        for name in libpng freetype harfbuzz libjpeg libtiff libxslt libexslt libzmq; do
+          if [[ $name != libjpeg && $name != libtiff && $name != libxslt && $name != libexslt && $name != libzmq ]]; then
             xcodebuild -create-xcframework \
               -framework "build/Release-iphoneos/$name.framework" \
               -framework "build/Release-iphonesimulator/$name.framework" \
