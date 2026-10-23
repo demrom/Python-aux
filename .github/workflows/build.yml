@@ -228,9 +228,84 @@ jobs:
           .build/flang_rt.xcframework.zip
           .build/openblas-checksums.txt
 
+  gis:
+    name: Building GIS frameworks
+    runs-on: macos-26
+    timeout-minutes: 120
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        persist-credentials: false
+    - name: Toolchain and pinned GIS sources
+      run: |
+        xcodebuild -version
+        brew install cmake ninja
+        git submodule update --init --depth 1 GDAL geos libspatialindex
+        git submodule status GDAL geos libspatialindex
+    - name: Build six GIS frameworks
+      run: nice -n 15 bash build_gis.sh
+    - name: Link GIS consumers and run on arm64 Simulator
+      run: |
+        for arch in arm64 x86_64; do
+          framework="$PWD/.build/gis/iphonesimulator-universal"
+          xcrun --sdk iphonesimulator clang -target "$arch-apple-ios14.0-simulator" tests/gis.c \
+            -I"$framework/libgeos_c.framework/Headers" -I"$framework/libproj.framework/Headers" \
+            -I"$framework/libgdal.framework/Headers" -I"$framework/libspatialindex_c.framework/Headers" -F"$framework" \
+            -framework libgeos -framework libgeos_c -framework libproj -framework libgdal \
+            -framework libspatialindex -framework libspatialindex_c \
+            -Wl,-rpath,"$framework" -o ".build/gis-test-$arch"
+        done
+        runtime=$(xcrun simctl list runtimes -j | jq -r '.runtimes[] | select(.isAvailable and (.identifier | contains("iOS"))) | .identifier' | tail -n 1)
+        device=$(xcrun simctl create Python-aux-GIS com.apple.CoreSimulator.SimDeviceType.iPhone-17 "$runtime")
+        trap 'xcrun simctl shutdown "$device"; xcrun simctl delete "$device"' EXIT
+        xcrun simctl boot "$device"
+        xcrun simctl bootstatus "$device" -b
+        xcrun simctl spawn "$device" "$PWD/.build/gis-test-arm64"
+    - name: Audit GIS slices and checksum
+      run: |
+        for name in libgeos libgeos_c libproj libgdal libspatialindex libspatialindex_c; do
+          plutil -convert json -o - "$name.xcframework/Info.plist" | jq -e '
+            [.AvailableLibraries[] | {id: .LibraryIdentifier, archs: (.SupportedArchitectures | sort)}] | sort_by(.id) ==
+            [{id: "ios-arm64", archs: ["arm64"]}, {id: "ios-arm64_x86_64-simulator", archs: ["arm64", "x86_64"]}]' >/dev/null
+          for slice in ios-arm64 ios-arm64_x86_64-simulator; do
+            binary="$name.xcframework/$slice/$name.framework/$name"
+            expected=IOS
+            archs=arm64
+            if [[ $slice == *simulator ]]; then expected=IOSSIMULATOR; archs='arm64 x86_64'; fi
+            actual=$(lipo -archs "$binary" | tr ' ' '\n' | sort | paste -sd ' ' -)
+            test "$actual" = "$archs"
+            for arch in $archs; do
+              xcrun vtool -arch "$arch" -show-build "$binary" > ".build/gis/$name-$slice-$arch-platform.txt"
+              awk -v expected="$expected" '
+                $1 == "platform" { if ($2 != expected) exit 1; platforms++ }
+                $1 == "minos" { split($2, version, "."); if (version[1] > 14 || (version[1] == 14 && version[2] > 0)) exit 1; versions++ }
+                END { if (platforms != 1 || versions != 1) exit 1 }
+              ' ".build/gis/$name-$slice-$arch-platform.txt"
+            done
+            otool -L "$binary" >&2
+            if otool -L "$binary" | grep $'\t' | grep -E '/opt/homebrew|/usr/local|/Users/|/private/|/tmp/'; then exit 1; fi
+          done
+          zip --symlinks -rq "$name.xcframework.zip" "$name.xcframework"
+          echo "$(swift package compute-checksum "$name.xcframework.zip")  $name.xcframework.zip"
+        done > gis-checksums.txt
+    - uses: actions/upload-artifact@v7
+      with:
+        name: gis
+        if-no-files-found: error
+        path: |
+          libgeos.xcframework.zip
+          libgeos_c.xcframework.zip
+          libproj.xcframework.zip
+          libgdal.xcframework.zip
+          libspatialindex.xcframework.zip
+          libspatialindex_c.xcframework.zip
+          gis-checksums.txt
+
   release:
     name: Publishing release
-    needs: [build, fortran]
+    needs: [build, fortran, gis]
     if: startsWith(github.ref, 'refs/tags/v') && github.repository == 'holzschu/Python-aux'
     runs-on: ubuntu-latest
     permissions:
@@ -247,6 +322,7 @@ jobs:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         cat dist/openblas-checksums.txt >> dist/checksums.txt
+        cat dist/gis-checksums.txt >> dist/checksums.txt
         cp dist/checksums.txt dist/release.md
         if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
           gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
