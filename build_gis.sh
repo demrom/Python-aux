@@ -154,3 +154,13 @@ for name in $products; do
   xcodebuild -create-xcframework -framework "$build/iphoneos/$name.framework" \
     -framework "$simulator" -output "$root/$name.xcframework"
 done
+
+if [[ $component == all || $component == proj ]]; then
+  # PROJ's database and init files are platform-independent runtime resources.
+  data=$build/iphoneos/install/share/proj
+  test -s "$data/proj.db"
+  test "$(/usr/bin/sqlite3 "$data/proj.db" 'PRAGMA quick_check;')" = ok
+  COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs \
+    --uid 0 --gid 0 --uname root --gname wheel \
+    -czf "$root/proj-data.tar.gz" -C "$(dirname "$data")" proj
+fi

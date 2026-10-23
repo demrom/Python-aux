@@ -336,6 +336,8 @@ jobs:
       run: nice -n 15 bash build_gis.sh
     - name: Link GIS consumers and run on arm64 Simulator
       run: |
+        mkdir -p .build/gis-data
+        tar -xzf proj-data.tar.gz -C .build/gis-data
         for arch in arm64 x86_64; do
           framework="$PWD/.build/gis/iphonesimulator-universal"
           xcrun --sdk iphonesimulator clang -target "$arch-apple-ios14.0-simulator" tests/gis.c \
@@ -350,7 +352,7 @@ jobs:
         trap 'xcrun simctl shutdown "$device"; xcrun simctl delete "$device"' EXIT
         xcrun simctl boot "$device"
         xcrun simctl bootstatus "$device" -b
-        xcrun simctl spawn "$device" "$PWD/.build/gis-test-arm64"
+        xcrun simctl spawn "$device" "$PWD/.build/gis-test-arm64" "$PWD/.build/gis-data/proj"
     - name: Audit GIS slices and checksum
       run: |
         for name in libgeos libgeos_c libproj libgdal libspatialindex libspatialindex_c; do
@@ -378,6 +380,7 @@ jobs:
           zip --symlinks -rq "$name.xcframework.zip" "$name.xcframework"
           echo "$(swift package compute-checksum "$name.xcframework.zip")  $name.xcframework.zip"
         done > gis-checksums.txt
+        shasum -a 256 proj-data.tar.gz >> gis-checksums.txt
     - uses: actions/upload-artifact@v7
       with:
         name: gis
@@ -389,6 +392,7 @@ jobs:
           libgdal.xcframework.zip
           libspatialindex.xcframework.zip
           libspatialindex_c.xcframework.zip
+          proj-data.tar.gz
           gis-checksums.txt
 
   release:
@@ -413,9 +417,9 @@ jobs:
         cp dist/checksums.txt dist/release.md
         if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
           gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-            dist/*.xcframework.zip dist/python-science.tar.gz dist/checksums.txt
+            dist/*.xcframework.zip dist/python-science.tar.gz dist/proj-data.tar.gz dist/checksums.txt
         else
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
             --verify-tag --latest=false --title "Release $GITHUB_REF_NAME" --notes-file dist/release.md \
-            dist/*.xcframework.zip dist/python-science.tar.gz dist/checksums.txt
+            dist/*.xcframework.zip dist/python-science.tar.gz dist/proj-data.tar.gz dist/checksums.txt
         fi

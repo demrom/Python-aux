@@ -9,7 +9,8 @@
 #include <gdal.h>
 #include <spatialindex/capi/sidx_api.h>
 
-int main(void) {
+int main(int argc, char **argv) {
+    assert(argc == 2);
     GEOSContextHandle_t geos = GEOS_init_r();
     assert(geos);
     GEOSWKTReader *reader = GEOSWKTReader_create_r(geos);
@@ -27,6 +28,24 @@ int main(void) {
     PJ_COORD point = proj_trans(projection, PJ_FWD, proj_coord(0, 0, 0, 0));
     assert(proj_errno(projection) == 0 && fabs(point.xy.x) < 1e-9 && fabs(point.xy.y) < 1e-8);
     proj_destroy(projection);
+
+    PJ_CONTEXT *context = proj_context_create();
+    assert(context);
+    const char *data_path = argv[1];
+    proj_context_set_search_paths(context, 1, &data_path);
+    projection = proj_create_crs_to_crs(context, "EPSG:4326", "EPSG:3857", NULL);
+    if (!projection) {
+        fputs("Packaged PROJ database lookup failed\n", stderr);
+        proj_context_destroy(context);
+        return 1;
+    }
+    PJ *visualization = proj_normalize_for_visualization(context, projection);
+    assert(visualization);
+    point = proj_trans(visualization, PJ_FWD, proj_coord(1, 0, 0, 0));
+    assert(proj_errno(visualization) == 0 && fabs(point.xy.x - 111319.49079327357) < 1e-6 && fabs(point.xy.y) < 1e-8);
+    proj_destroy(visualization);
+    proj_destroy(projection);
+    proj_context_destroy(context);
 
     char *utf8 = CPLRecode("\xa4", "ISO-8859-15", "UTF-8");
     assert(utf8 && strcmp(utf8, "\xe2\x82\xac") == 0);
