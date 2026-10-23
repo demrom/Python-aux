@@ -36,27 +36,75 @@ jobs:
 
     - name: Build libraries
       run: |
-        bash build_libpng.sh
-        bash build_freetype.sh
+        nice -n 15 bash build_libpng.sh
+        nice -n 15 bash build_freetype.sh
+        nice -n 15 bash build_libjpg.sh
+        nice -n 15 bash build_libtiff.sh
+
+    - name: Link codec consumers and run on arm64 Simulator
+      run: |
+        mkdir -p .build
+        for arch in arm64 x86_64; do
+          xcrun --sdk iphonesimulator clang -target "$arch-apple-ios14.0-simulator" tests/codecs.c \
+            -I libjpeg.xcframework/ios-arm64_x86_64-simulator/Headers \
+            -I libtiff.xcframework/ios-arm64_x86_64-simulator/Headers \
+            libtiff.xcframework/ios-arm64_x86_64-simulator/libtiff.a \
+            libjpeg.xcframework/ios-arm64_x86_64-simulator/libjpeg.a -lz -o ".build/codecs-$arch"
+        done
+        runtime=$(xcrun simctl list runtimes -j | jq -r '.runtimes[] | select(.isAvailable and (.identifier | contains("iOS"))) | .identifier' | tail -n 1)
+        device=$(xcrun simctl create Python-aux-codecs com.apple.CoreSimulator.SimDeviceType.iPhone-17 "$runtime")
+        trap 'xcrun simctl shutdown "$device"; xcrun simctl delete "$device"' EXIT
+        xcrun simctl boot "$device"
+        xcrun simctl bootstatus "$device" -b
+        xcrun simctl spawn "$device" "$PWD/.build/codecs-arm64"
 
     - name: Package, verify slices and checksum
       run: |
         mkdir -p .build
+        cp -R libjpeg.xcframework libtiff.xcframework .build/
         echo '| xcframework | slice | archs |' >> "$GITHUB_STEP_SUMMARY"
         echo '| --- | --- | --- |' >> "$GITHUB_STEP_SUMMARY"
-        for name in libpng freetype harfbuzz; do
-          xcodebuild -create-xcframework \
-            -framework "build/Release-iphoneos/$name.framework" \
-            -framework "build/Release-iphonesimulator/$name.framework" \
-            -output ".build/$name.xcframework"
-          for slice in ios-arm64 ios-x86_64-simulator; do
-            bin=".build/$name.xcframework/$slice/$name.framework/$name"
+        for name in libpng freetype harfbuzz libjpeg libtiff; do
+          if [[ $name != libjpeg && $name != libtiff ]]; then
+            xcodebuild -create-xcframework \
+              -framework "build/Release-iphoneos/$name.framework" \
+              -framework "build/Release-iphonesimulator/$name.framework" \
+              -output ".build/$name.xcframework"
+          fi
+          xcf=".build/$name.xcframework"
+          plutil -convert json -o - "$xcf/Info.plist" | jq -e '
+            [.AvailableLibraries[] | {id: .LibraryIdentifier, archs: (.SupportedArchitectures | sort)}] | sort_by(.id) ==
+            [{id: "ios-arm64", archs: ["arm64"]}, {id: "ios-arm64_x86_64-simulator", archs: ["arm64", "x86_64"]}]' >/dev/null
+          for slice in ios-arm64 ios-arm64_x86_64-simulator; do
+            bin="$xcf/$slice/$name.framework/$name"
+            if [[ $name == libjpeg || $name == libtiff ]]; then
+              bin="$xcf/$slice/$name.a"
+            fi
             archs=$(lipo -archs "$bin")
             case "$slice:$archs" in
-              ios-arm64:arm64|ios-x86_64-simulator:x86_64) ;;
+              ios-arm64:arm64|"ios-arm64_x86_64-simulator:arm64 x86_64"|"ios-arm64_x86_64-simulator:x86_64 arm64") ;;
               *) echo "::error::Unexpected slice $slice: $archs"; exit 1 ;;
             esac
             echo "| $name | $slice | $archs |" >> "$GITHUB_STEP_SUMMARY"
+            if [[ $name == libjpeg || $name == libtiff ]]; then
+              # Inspect every archive member; the framework audit accepts dylibs only.
+              expected_platform=2
+              max_minos=11
+              if [[ $slice == *simulator ]]; then expected_platform=7; max_minos=14; fi
+              xcrun otool -l "$bin" > ".build/$name-$slice-load-commands.txt"
+              awk -v expected="$expected_platform" -v maximum="$max_minos" '
+                /\(architecture arm64\)/ {arm64=1}
+                /\(architecture x86_64\)/ {arm64=0}
+                /\.a\([^)]*\.o\)/ {members++}
+                /cmd LC_BUILD_VERSION/ {build=1; versions++}
+                build && /platform/ {if ($2 != expected) bad=1}
+                build && /minos/ {if ($2+0 > maximum) bad=1; build=0}
+                /cmd LC_VERSION_MIN_IPHONEOS/ {if (expected == 7 && arm64) bad=1; legacy=1; versions++}
+                legacy && /version / {if ($2+0 > maximum) bad=1; legacy=0}
+                END {if (bad || !members || members != versions) exit 1}
+              ' ".build/$name-$slice-load-commands.txt" || { echo "::error::$name $slice archive load commands failed audit"; exit 1; }
+              continue
+            fi
             otool -L "$bin"
             if otool -L "$bin" | grep $'\t' | grep -E '/opt/homebrew|/usr/local|/Users/runner'; then exit 1; fi
           done
@@ -77,6 +125,7 @@ jobs:
           .build/*.xcframework.zip
           .build/checksums.txt
           .build/release.md
+          .build/*-load-commands.txt
 
   fortran:
     name: OpenBLAS with Fortran LAPACK

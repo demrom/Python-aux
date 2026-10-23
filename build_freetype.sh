@@ -31,21 +31,30 @@ make -j 4
 mkdir -p build-iphoneos
 cp objs/.libs/libfreetype.a build-iphoneos
 cp objs/.libs/libfreetype.dylib build-iphoneos
+for sim_arch in arm64 x86_64; do
+  sim_host=aarch64-apple-darwin
+  if [[ $sim_arch == x86_64 ]]; then sim_host=x86_64-apple-darwin; fi
 if [ -f Makefile ]; then make distclean; fi
 ./configure CC=clang CXX=clang++ \
-	CFLAGS="-arch x86_64 -mios-simulator-version-min=11.0 -isysroot ${SIM_SDKROOT}" \
-	CPPFLAGS="-arch x86_64 -mios-simulator-version-min=11.0 -isysroot ${SIM_SDKROOT}" \
-	CXXFLAGS="-arch x86_64 -mios-simulator-version-min=11.0 -isysroot ${SIM_SDKROOT}" \
-	LDFLAGS="-arch x86_64 -mios-simulator-version-min=11.0 -isysroot ${SIM_SDKROOT}" \
+	CFLAGS="-arch ${sim_arch} -mios-simulator-version-min=11.0 -isysroot ${SIM_SDKROOT}" \
+	CPPFLAGS="-arch ${sim_arch} -mios-simulator-version-min=11.0 -isysroot ${SIM_SDKROOT}" \
+	CXXFLAGS="-arch ${sim_arch} -mios-simulator-version-min=11.0 -isysroot ${SIM_SDKROOT}" \
+	LDFLAGS="-arch ${sim_arch} -mios-simulator-version-min=11.0 -isysroot ${SIM_SDKROOT}" \
 	CC_BUILD="clang -isysroot ${OSX_SDKROOT}" \
-	--build=x86_64-apple-darwin --host=x86_64-apple-darwin --with-harfbuzz=no \
+	--build=x86_64-apple-darwin --host=${sim_host} --with-harfbuzz=no \
 	--with-png=yes LIBPNG_CFLAGS="-I ${PWD}/../build/Release-iphonesimulator/libpng.framework/Headers" \
 	LIBPNG_LIBS="-F${PWD}/../build/Release-iphonesimulator -framework libpng" \
 	cross_compiling=yes
 make -j 4
+mkdir -p build-iphonesimulator-${sim_arch}
+cp objs/.libs/libfreetype.a build-iphonesimulator-${sim_arch}
+cp objs/.libs/libfreetype.dylib build-iphonesimulator-${sim_arch}
+
+done
 mkdir -p build-iphonesimulator
-cp objs/.libs/libfreetype.a build-iphonesimulator
-cp objs/.libs/libfreetype.dylib build-iphonesimulator
+for suffix in a dylib; do
+  lipo -create "build-iphonesimulator-arm64/libfreetype.$suffix" "build-iphonesimulator-x86_64/libfreetype.$suffix" -output "build-iphonesimulator/libfreetype.$suffix"
+done
 popd
 
 # step 2: build harfbuzz using freetype 
@@ -68,17 +77,26 @@ make -C src -j4 --quiet lib
 mkdir -p build-iphoneos
 cp src/.libs/libharfbuzz.a build-iphoneos
 cp src/.libs/libharfbuzz.0.dylib build-iphoneos/libharfbuzz.dylib
+for sim_arch in arm64 x86_64; do
+  sim_host=aarch64-apple-darwin
+  if [[ $sim_arch == x86_64 ]]; then sim_host=x86_64-apple-darwin; fi
 if [ -f Makefile ]; then make distclean; fi
 ./configure CC=clang CXX=clang++ \
-	CFLAGS="-arch x86_64 -mios-simulator-version-min=11.0 -isysroot ${SIM_SDKROOT}" \
-	CPPFLAGS="-arch x86_64 -mios-simulator-version-min=11.0 -isysroot ${SIM_SDKROOT}" \
-	CXXFLAGS="-arch x86_64 -mios-simulator-version-min=11.0 -isysroot ${SIM_SDKROOT}" \
-	LDFLAGS="-arch x86_64 -mios-simulator-version-min=11.0 -isysroot${SIM_SDKROOT} -L${PWD}/../${freetype}/build-iphonesimulator/" \
-	--build=x86_64-apple-darwin --host=x86_64-apple-darwin --enable-static=yes --with-glib=no --with-cairo=no --with-freetype=yes FREETYPE_CFLAGS="-I${PWD}/../${freetype}/include/" FREETYPE_LIBS="-lfreetype" cross_compiling=yes
+	CFLAGS="-arch ${sim_arch} -mios-simulator-version-min=11.0 -isysroot ${SIM_SDKROOT}" \
+	CPPFLAGS="-arch ${sim_arch} -mios-simulator-version-min=11.0 -isysroot ${SIM_SDKROOT}" \
+	CXXFLAGS="-arch ${sim_arch} -mios-simulator-version-min=11.0 -isysroot ${SIM_SDKROOT}" \
+	LDFLAGS="-arch ${sim_arch} -mios-simulator-version-min=11.0 -isysroot${SIM_SDKROOT} -L${PWD}/../${freetype}/build-iphonesimulator-${sim_arch}/" \
+	--build=x86_64-apple-darwin --host=${sim_host} --enable-static=yes --with-glib=no --with-cairo=no --with-freetype=yes FREETYPE_CFLAGS="-I${PWD}/../${freetype}/include/" FREETYPE_LIBS="-lfreetype" cross_compiling=yes
 make -C src -j4 --quiet lib
+mkdir -p build-iphonesimulator-${sim_arch}
+cp src/.libs/libharfbuzz.a build-iphonesimulator-${sim_arch}
+cp src/.libs/libharfbuzz.0.dylib build-iphonesimulator-${sim_arch}/libharfbuzz.dylib
+
+done
 mkdir -p build-iphonesimulator
-cp src/.libs/libharfbuzz.a build-iphonesimulator
-cp src/.libs/libharfbuzz.0.dylib build-iphonesimulator/libharfbuzz.dylib
+for suffix in a dylib; do
+  lipo -create "build-iphonesimulator-arm64/libharfbuzz.$suffix" "build-iphonesimulator-x86_64/libharfbuzz.$suffix" -output "build-iphonesimulator/libharfbuzz.$suffix"
+done
 if [ -f Makefile ]; then make distclean; fi
 popd 
 
@@ -100,22 +118,31 @@ make -j 4
 mkdir -p build-iphoneos
 cp objs/.libs/libfreetype.a build-iphoneos
 cp objs/.libs/libfreetype.dylib build-iphoneos
+for sim_arch in arm64 x86_64; do
+  sim_host=aarch64-apple-darwin
+  if [[ $sim_arch == x86_64 ]]; then sim_host=x86_64-apple-darwin; fi
 if [ -f Makefile ]; then make distclean; fi
 ./configure CC=clang CXX=clang++ \
-	CFLAGS="-arch x86_64 -mios-simulator-version-min=11.0 -isysroot ${SIM_SDKROOT}" \
-	CPPFLAGS="-arch x86_64 -mios-simulator-version-min=11.0 -isysroot ${SIM_SDKROOT}" \
-	CXXFLAGS="-arch x86_64 -mios-simulator-version-min=11.0 -isysroot ${SIM_SDKROOT}" \
-	LDFLAGS="-arch x86_64 -mios-simulator-version-min=11.0 -isysroot ${SIM_SDKROOT}" \
+	CFLAGS="-arch ${sim_arch} -mios-simulator-version-min=11.0 -isysroot ${SIM_SDKROOT}" \
+	CPPFLAGS="-arch ${sim_arch} -mios-simulator-version-min=11.0 -isysroot ${SIM_SDKROOT}" \
+	CXXFLAGS="-arch ${sim_arch} -mios-simulator-version-min=11.0 -isysroot ${SIM_SDKROOT}" \
+	LDFLAGS="-arch ${sim_arch} -mios-simulator-version-min=11.0 -isysroot ${SIM_SDKROOT}" \
 	CC_BUILD="clang -isysroot ${OSX_SDKROOT}" \
-	--build=x86_64-apple-darwin --host=x86_64-apple-darwin --with-harfbuzz=no \
+	--build=x86_64-apple-darwin --host=${sim_host} --with-harfbuzz=no \
 	--with-png=yes LIBPNG_CFLAGS="-I ${PWD}/../build/Release-iphonesimulator/libpng.framework/Headers" \
 	LIBPNG_LIBS="-F${PWD}/../build/Release-iphonesimulator -framework libpng" \
-	--with-harfbuzz=yes HARFBUZZ_CFLAGS="-I${PWD}/../harfbuzz/src/" HARFBUZZ_LIBS="-L${PWD}/../harfbuzz/build-iphonesimulator -lharfbuzz" \
+	--with-harfbuzz=yes HARFBUZZ_CFLAGS="-I${PWD}/../harfbuzz/src/" HARFBUZZ_LIBS="-L${PWD}/../harfbuzz/build-iphonesimulator-${sim_arch} -lharfbuzz" \
 	cross_compiling=yes
 make -j 4
+mkdir -p build-iphonesimulator-${sim_arch}
+cp objs/.libs/libfreetype.a build-iphonesimulator-${sim_arch}
+cp objs/.libs/libfreetype.dylib build-iphonesimulator-${sim_arch}
+
+done
 mkdir -p build-iphonesimulator
-cp objs/.libs/libfreetype.a build-iphonesimulator
-cp objs/.libs/libfreetype.dylib build-iphonesimulator
+for suffix in a dylib; do
+  lipo -create "build-iphonesimulator-arm64/libfreetype.$suffix" "build-iphonesimulator-x86_64/libfreetype.$suffix" -output "build-iphonesimulator/libfreetype.$suffix"
+done
 popd
 
 # step 4: create the frameworks:

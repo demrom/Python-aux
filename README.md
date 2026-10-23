@@ -28,7 +28,9 @@ For use in your own repository, update the hash sums in `Package.swift`, publish
 
 ## Releasing xcframeworks
 
-CI builds the libpng, freetype and harfbuzz xcframeworks on pull requests (except Markdown-only changes) and manual runs. It uploads the ZIPs, `checksums.txt` and `release.md` in the `xcframeworks` artifact. The build summary lists each slice and its architectures.
+CI builds libpng, FreeType, HarfBuzz, JPEG and TIFF on pull requests (except Markdown-only changes) and manual runs. Each xcframework contains arm64 device and universal arm64/x86_64 Simulator slices. JPEG and TIFF remain static libraries. It uploads the ZIPs, `checksums.txt` and `release.md` in the `xcframeworks` artifact. The build summary lists each slice and its architectures.
+
+Run `bash build_libjpg.sh` before `bash build_libtiff.sh`. TIFF retains its built-in codecs and Deflate, and enables JPEG and old JPEG using the companion library. CI links the codec consumer for both Simulator architectures and runs it on arm64. Device and Intel Simulator libraries retain iOS 11; arm64 Simulator requires iOS 14.
 
 To release from this repository, push a `v*` tag, then wait for the "Publishing release" job. It creates a release with the generated notes, or adds the assets to an existing release while keeping its notes. Uploads fail if an asset already exists; published files are never overwritten. Only the release job has write permission.
 
