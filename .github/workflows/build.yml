@@ -157,7 +157,7 @@ jobs:
         mkdir -p .build
         printf '%s\n' "$flang_version" > .build/flang-version.txt
         git clone --filter=blob:none --sparse --depth 1 --branch "llvmorg-$flang_version" https://github.com/llvm/llvm-project.git .build/llvm
-        git -C .build/llvm sparse-checkout set flang-rt cmake llvm/cmake llvm/include/llvm/Frontend flang/include flang/cmake runtimes llvm/utils/llvm-lit flang/lib/Decimal libc/shared libc/src/__support
+        git -C .build/llvm sparse-checkout set flang-rt openmp third-party/unittest cmake llvm/cmake llvm/include/llvm/Frontend flang/include flang/cmake runtimes llvm/utils/llvm-lit flang/lib/Decimal libc/shared libc/src/__support
         curl -fL --retry 3 https://raw.githubusercontent.com/Reference-LAPACK/lapack/v3.12.1/SRC/dpotrf.f -o .build/dpotrf.f
         echo 'ea50dbb7c75ca65c4e388ec63b00bc0f3ebbaf9d8d358644d727319007df972a  .build/dpotrf.f' | shasum -a 256 -c -
 
@@ -170,6 +170,7 @@ jobs:
         xcrun vtool -show-build .build/dpotrf-ios.o
         xcrun vtool -show-build .build/dpotrf-simulator.o
         nice -n 15 bash build_flang_runtime.sh .build/llvm .build/runtime
+        nice -n 15 bash build_libomp.sh .build/llvm .build/libomp
 
     - name: Build and link OpenBLAS for both platforms
       run: nice -n 15 bash build_openblas_flang.sh .build/runtime .build/openblas
@@ -184,6 +185,10 @@ jobs:
             ".build/runtime-probe-$arch.o" \
             -F"$framework" -framework openblas -F"$PWD/.build/runtime/iphonesimulator-universal" -framework flang_rt \
             -Wl,-rpath,"$framework" -Wl,-rpath,"$PWD/.build/runtime/iphonesimulator-universal" -o ".build/lapack-test-$arch"
+          xcrun --sdk iphonesimulator clang -target "$arch-apple-ios14.0-simulator" tests/openmp.c \
+            -Xpreprocessor -fopenmp -I .build/libomp/iphonesimulator-universal/libomp.framework/Headers \
+            -F"$PWD/.build/libomp/iphonesimulator-universal" -framework libomp \
+            -Wl,-rpath,"$PWD/.build/libomp/iphonesimulator-universal" -o ".build/openmp-test-$arch"
         done
         runtime=$(xcrun simctl list runtimes -j | jq -r '.runtimes[] | select(.isAvailable and (.identifier | contains("iOS"))) | .identifier' | tail -n 1)
         device=$(xcrun simctl create OpenBLAS-LAPACK com.apple.CoreSimulator.SimDeviceType.iPhone-17 "$runtime")
@@ -191,6 +196,7 @@ jobs:
         xcrun simctl boot "$device"
         xcrun simctl bootstatus "$device" -b
         xcrun simctl spawn "$device" "$PWD/.build/lapack-test-arm64"
+        xcrun simctl spawn "$device" "$PWD/.build/openmp-test-arm64"
 
     - name: Package and checksum
       run: |
@@ -202,7 +208,11 @@ jobs:
           -framework "$PWD/.build/runtime/iphoneos/flang_rt.framework" \
           -framework "$PWD/.build/runtime/iphonesimulator-universal/flang_rt.framework" \
           -output .build/flang_rt.xcframework
-        for name in openblas flang_rt; do
+        xcodebuild -create-xcframework \
+          -framework "$PWD/.build/libomp/iphoneos/libomp.framework" \
+          -framework "$PWD/.build/libomp/iphonesimulator-universal/libomp.framework" \
+          -output .build/libomp.xcframework
+        for name in openblas flang_rt libomp; do
           for slice in ios-arm64 ios-arm64_x86_64-simulator; do
             bin=".build/$name.xcframework/$slice/$name.framework/$name"
             if [[ $slice == ios-arm64 ]]; then
@@ -215,7 +225,7 @@ jobs:
             if otool -L "$bin" | grep $'\t' | grep -E '/opt/homebrew|/usr/local|/Users/runner'; then exit 1; fi
           done
         done
-        for name in openblas flang_rt; do
+        for name in openblas flang_rt libomp; do
           (cd .build && zip --symlinks -rq "$name.xcframework.zip" "$name.xcframework")
           sum=$(swift package compute-checksum ".build/$name.xcframework.zip")
           echo "$sum  $name.xcframework.zip"
@@ -228,6 +238,7 @@ jobs:
         path: |
           .build/openblas.xcframework.zip
           .build/flang_rt.xcframework.zip
+          .build/libomp.xcframework.zip
           .build/openblas-checksums.txt
           .build/flang-version.txt
 
