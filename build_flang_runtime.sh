@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Usage: bash build_flang_runtime.sh LLVM_SOURCE BUILD_DIRECTORY
-# Requires Homebrew flang 23.1.4, llvm 23.1.4, cmake and ninja, plus Xcode.
+# Requires Homebrew flang and llvm, cmake and ninja, plus Xcode.
 # LLVM_SOURCE must contain flang-rt, flang, libc, runtimes, cmake and llvm.
 llvm_source=$(cd "${1:?LLVM source directory is required}" && pwd)
 mkdir -p "${2:?Build directory is required}"
@@ -10,14 +10,10 @@ build_root=$(cd "$2" && pwd)
 script_root=$(cd "$(dirname "$0")" && pwd)
 llvm_prefix=$(brew --prefix llvm)
 flang=$(brew --prefix flang)/bin/flang
-revision=7a941dfb2877a0b8cf30323fefa85ad019e0b0f5
-
-[[ $(git -C "$llvm_source" rev-parse HEAD) == "$revision" ]] || {
-  echo "LLVM source must be llvmorg-23.1.4 ($revision)" >&2
-  exit 1
-}
-"$flang" --version | grep -q 'version 23.1.4' || {
-  echo 'flang 23.1.4 is required' >&2
+flang_version=$("$flang" --version | awk 'NR == 1 {for (i = 1; i < NF; i++) if ($i == "version") {print $(i+1); exit}}')
+[[ $flang_version =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]] || exit 1
+[[ $(git -C "$llvm_source" describe --exact-match --tags) == "llvmorg-$flang_version" ]] || {
+  echo "LLVM source must match the installed Flang release: llvmorg-$flang_version" >&2
   exit 1
 }
 patch_file=$script_root/patches/flang/ios-runtime.patch
@@ -45,7 +41,7 @@ for target in iphoneos iphonesimulator iphonesimulator-x86_64; do
     -DCMAKE_SYSTEM_PROCESSOR="$arch" \
     -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
     -DCMAKE_C_COMPILER="$llvm_prefix/bin/clang" \
-    -DCMAKE_CXX_COMPILER="$llvm_prefix/bin/clang++" \
+    -DCMAKE_CXX_COMPILER="$(xcrun --sdk "$sdk" -f clang++)" \
     -DCMAKE_Fortran_COMPILER="$flang" \
     -DCMAKE_Fortran_COMPILER_TARGET="$triple" \
     -DCMAKE_Fortran_COMPILER_WORKS=YES \
@@ -55,7 +51,7 @@ for target in iphoneos iphonesimulator iphonesimulator-x86_64; do
     -DFLANG_RT_FORTRAN_MODULES=OFF
   cmake --build "$build_root/$target" -j 4
   mkdir -p "$build_root/lib/$target"
-  cp "$build_root/$target/lib/clang/23/lib/ios/libflang_rt.runtime.a" "$build_root/lib/$target/"
+  cp "$build_root/$target/lib/clang/${flang_version%%.*}/lib/ios/libflang_rt.runtime.a" "$build_root/lib/$target/"
   framework=$build_root/$target/flang_rt.framework
   mkdir -p "$framework"
   xcrun --sdk "$sdk" clang++ -target "$triple" -dynamiclib \

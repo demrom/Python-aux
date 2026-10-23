@@ -143,7 +143,8 @@ jobs:
         flang --version
         xcodebuild -version
         git submodule update --init --depth 1 OpenBLAS
-        git clone --filter=blob:none --sparse --depth 1 --branch llvmorg-23.1.4 https://github.com/llvm/llvm-project.git .build/llvm
+        flang_version=$(flang --version | awk 'NR == 1 {for (i = 1; i < NF; i++) if ($i == "version") {print $(i+1); exit}}')
+        git clone --filter=blob:none --sparse --depth 1 --branch "llvmorg-$flang_version" https://github.com/llvm/llvm-project.git .build/llvm
         git -C .build/llvm sparse-checkout set flang-rt cmake llvm/cmake llvm/include/llvm/Frontend flang/include flang/cmake runtimes llvm/utils/llvm-lit flang/lib/Decimal libc/shared libc/src/__support
         curl -fL --retry 3 https://raw.githubusercontent.com/Reference-LAPACK/lapack/v3.12.1/SRC/dpotrf.f -o .build/dpotrf.f
         echo 'ea50dbb7c75ca65c4e388ec63b00bc0f3ebbaf9d8d358644d727319007df972a  .build/dpotrf.f' | shasum -a 256 -c -
