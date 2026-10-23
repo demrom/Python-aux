@@ -44,6 +44,12 @@ Run `nice -n 15 bash build_flang_runtime.sh <llvm-source> <runtime-build>`, then
 
 This build includes the Fortran BLAS and LAPACK APIs and CBLAS. LAPACKE is disabled (`NO_LAPACKE=ON`). NumPy and SciPy use the Fortran LAPACK API.
 
+## NumPy and SciPy
+
+The science CI job runs the pinned `demrom/cpython` package recipes after the Fortran job. It builds Python 3.13 from source, then NumPy 2.3.1 and SciPy 1.16.1 for arm64 device and both Simulator architectures using the matching Flang runtime. It preserves a-Shell's eight scientific framework products and `.fwork` module aliases. The `science` artifact contains their ZIPs, the pure Python packages in `python-science.tar.gz`, and `science-checksums.txt`.
+
+The Simulator consumer checks linear solves, eigenvalues, Cholesky, SVD, special functions, quadrature, interpolation and PROPACK with real and complex single/double precision. CI executes the packaged arm64 slices, audits the x86_64 slices statically and links an x86_64 Python launcher. These checks run on two sequential command threads in one process through `Py_BytesMain` to exercise interpreter re-entry; CI requires a final marker from the C launcher. App launch checks remain separate.
+
 ## GIS frameworks
 
 Run `nice -n 15 bash build_gis.sh` after initializing the `GDAL`, `geos` and `libspatialindex` submodules. CMake and Ninja build `libgdal`, `libgeos`, `libgeos_c`, `libproj`, `libspatialindex` and `libspatialindex_c` for arm64 device and universal arm64/x86_64 Simulator, all targeting iOS 14. The `gis` CI job links public C API consumers for both Simulator architectures, runs geometry, projection, encoding, raster and spatial-index checks on arm64, and uploads the six ZIPs with `gis-checksums.txt`. Tag releases include these files through the existing release job.

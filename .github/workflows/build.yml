@@ -154,6 +154,8 @@ jobs:
         xcodebuild -version
         git submodule update --init --depth 1 OpenBLAS
         flang_version=$(flang --version | awk 'NR == 1 {for (i = 1; i < NF; i++) if ($i == "version") {print $(i+1); exit}}')
+        mkdir -p .build
+        printf '%s\n' "$flang_version" > .build/flang-version.txt
         git clone --filter=blob:none --sparse --depth 1 --branch "llvmorg-$flang_version" https://github.com/llvm/llvm-project.git .build/llvm
         git -C .build/llvm sparse-checkout set flang-rt cmake llvm/cmake llvm/include/llvm/Frontend flang/include flang/cmake runtimes llvm/utils/llvm-lit flang/lib/Decimal libc/shared libc/src/__support
         curl -fL --retry 3 https://raw.githubusercontent.com/Reference-LAPACK/lapack/v3.12.1/SRC/dpotrf.f -o .build/dpotrf.f
@@ -227,6 +229,92 @@ jobs:
           .build/openblas.xcframework.zip
           .build/flang_rt.xcframework.zip
           .build/openblas-checksums.txt
+          .build/flang-version.txt
+
+  science:
+    name: NumPy and SciPy for iOS
+    needs: fortran
+    runs-on: macos-26
+    timeout-minutes: 240
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        persist-credentials: false
+    - uses: actions/download-artifact@v8
+      with:
+        name: openblas
+        path: .build/science-inputs
+    - name: Toolchain and pinned Python recipes
+      run: |
+        brew update
+        brew install autoconf automake libtool cmake ninja openssl@3 pkgconf uv flang
+        flang_version=$(flang --version | awk 'NR == 1 {for (i = 1; i < NF; i++) if ($i == "version") {print $(i+1); exit}}')
+        test "$flang_version" = "$(cat .build/science-inputs/flang-version.txt)"
+        (cd .build/science-inputs && shasum -a 256 -c openblas-checksums.txt)
+        for name in openblas flang_rt; do unzip -q ".build/science-inputs/$name.xcframework.zip" -d .build/science-inputs; done
+        git init .build/cpython
+        git -C .build/cpython fetch --depth 1 https://github.com/demrom/cpython.git 0711fa5bfe722c444e4f0eb5d820652081e56be7
+        git -C .build/cpython checkout --detach FETCH_HEAD
+        test "$(git -C .build/cpython rev-parse HEAD)" = 0711fa5bfe722c444e4f0eb5d820652081e56be7
+        git -C .build/cpython submodule update --init --recursive --depth 1 packages/numpy packages/cython packages/pybind11
+    - name: Build core Python and scientific frameworks
+      run: |
+        nice -n 15 bash .build/cpython/scripts/build-ci-ios.sh "$PWD/.build/python-core"
+        nice -n 15 bash .build/cpython/scripts/build-ci-science.sh "$PWD/.build/python-core" "$PWD/.build/science-inputs"
+    - name: Run target Python numerical checks on Simulator
+      run: |
+        science="$PWD/.build/cpython/.build/science"
+        core="$PWD/.build/python-core"
+        consumer="$science/consumer"
+        mkdir -p "$consumer/Frameworks"
+        tar -xzf "$science/dist/python-science.tar.gz" -C "$consumer"
+        for archive in "$science/dist/"*.xcframework.zip; do
+          unzip -q "$archive" -d "$consumer"
+          name=$(basename "$archive" .xcframework.zip)
+          cp -R "$consumer/$name.xcframework/ios-arm64_x86_64-simulator/$name.framework" "$consumer/Frameworks/"
+        done
+        runtime=$(xcrun simctl list runtimes -j | jq -r '[.runtimes[] | select(.isAvailable and (.identifier | contains("iOS")) and any(.supportedDeviceTypes[]?; .identifier == "com.apple.CoreSimulator.SimDeviceType.iPhone-17"))] | sort_by(.version | split(".") | map(tonumber)) | last.identifier // empty')
+        test -n "$runtime"
+        device=$(xcrun simctl create Python-aux-Science com.apple.CoreSimulator.SimDeviceType.iPhone-17 "$runtime")
+        trap 'xcrun simctl shutdown "$device"; xcrun simctl delete "$device"' EXIT
+        xcrun simctl boot "$device"
+        xcrun simctl bootstatus "$device" -b
+        status=0
+        SIMCTL_CHILD_PYTHONHOME="$core/install/iphonesimulator" \
+        SIMCTL_CHILD_PYTHONPATH="$consumer/iphonesimulator/lib/python3.13/site-packages" \
+        SIMCTL_CHILD_APPDIR="$consumer" \
+        SIMCTL_CHILD_DYLD_FRAMEWORK_PATH="$core/install/iphonesimulator:$science/iphonesimulator/native" \
+          xcrun simctl spawn "$device" "$science/science-python-arm64" "$PWD/.build/cpython/iOS/tests/science.py" > "$science/dist/science-runtime.log" 2>&1 || status=$?
+        cat "$science/dist/science-runtime.log"
+        test "$status" = 0
+        for result in \
+          "NumPy solve, eigenvalues, Cholesky and SVD PASS" \
+          "SciPy LAPACK, special functions, quadrature, spline and four PROPACK types PASS" \
+          "SciPy statistics, optimization, signal, IO and ODR imports PASS"; do
+          test "$(grep -c -x -F "$result" "$science/dist/science-runtime.log")" = 2
+        done
+        grep -q '^SCIENCE_REENTRY_PASSED$' "$science/dist/science-runtime.log"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: science
+        include-hidden-files: true
+        if-no-files-found: error
+        path: |
+          .build/cpython/.build/science/dist/*.xcframework.zip
+          .build/cpython/.build/science/dist/python-science.tar.gz
+          .build/cpython/.build/science/dist/science-checksums.txt
+          .build/cpython/.build/science/dist/science-release.md
+          .build/cpython/.build/science/dist/*-ios-*.txt
+          .build/cpython/.build/science/dist/science-runtime.log
+
+    - uses: actions/upload-artifact@v7
+      if: failure()
+      with:
+        name: science-failure-log
+        if-no-files-found: ignore
+        path: .build/cpython/.build/science/dist/science-runtime.log
 
   gis:
     name: Building GIS frameworks
@@ -305,7 +393,7 @@ jobs:
 
   release:
     name: Publishing release
-    needs: [build, fortran, gis]
+    needs: [build, fortran, gis, science]
     if: startsWith(github.ref, 'refs/tags/v') && github.repository == 'holzschu/Python-aux'
     runs-on: ubuntu-latest
     permissions:
@@ -321,14 +409,13 @@ jobs:
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        cat dist/openblas-checksums.txt >> dist/checksums.txt
-        cat dist/gis-checksums.txt >> dist/checksums.txt
+        cat dist/openblas-checksums.txt dist/gis-checksums.txt dist/science-checksums.txt >> dist/checksums.txt
         cp dist/checksums.txt dist/release.md
         if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
           gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-            dist/*.xcframework.zip dist/checksums.txt
+            dist/*.xcframework.zip dist/python-science.tar.gz dist/checksums.txt
         else
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
             --verify-tag --latest=false --title "Release $GITHUB_REF_NAME" --notes-file dist/release.md \
-            dist/*.xcframework.zip dist/checksums.txt
+            dist/*.xcframework.zip dist/python-science.tar.gz dist/checksums.txt
         fi
