@@ -286,9 +286,9 @@ jobs:
         (cd .build/science-inputs && shasum -a 256 -c checksums.txt)
         for name in openblas flang_rt libomp libzmq libxslt libexslt libgeos libgeos_c libproj libgdal freetype libpng libjpeg libtiff libfftw3 libfftw3_threads libfftw3f libfftw3f_threads libfftw3l libfftw3l_threads; do unzip -q ".build/science-inputs/$name.xcframework.zip" -d .build/science-inputs; done
         git init .build/cpython
-        git -C .build/cpython fetch --depth 1 https://github.com/demrom/cpython.git abda29f22fd8d8002aa71d03343bd8eb420706aa
+        git -C .build/cpython fetch --depth 1 https://github.com/demrom/cpython.git 8302fa886c5a72af1149894af88b27f4117021a8
         git -C .build/cpython checkout --detach FETCH_HEAD
-        test "$(git -C .build/cpython rev-parse HEAD)" = abda29f22fd8d8002aa71d03343bd8eb420706aa
+        test "$(git -C .build/cpython rev-parse HEAD)" = 8302fa886c5a72af1149894af88b27f4117021a8
         git -C .build/cpython submodule update --init --recursive --depth 1 packages/numpy packages/cython packages/pybind11
         git -C .build/cpython config submodule.packages/statsmodels.url https://github.com/statsmodels/statsmodels.git
         git -C .build/cpython submodule update --init --recursive --depth 1 packages/word_cloud packages/statsmodels packages/scikit-learn
