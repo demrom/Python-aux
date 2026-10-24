@@ -41,6 +41,7 @@ jobs:
         nice -n 15 bash build_libjpg.sh
         nice -n 15 bash build_libtiff.sh
         nice -n 15 bash build_libxslt.sh
+        nice -n 15 bash build_fftw.sh iphoneos iphonesimulator-arm64 iphonesimulator-x86_64
 
     - name: Link codec and XSLT consumers and run on arm64 Simulator
       run: |
@@ -71,11 +72,11 @@ jobs:
     - name: Package, verify slices and checksum
       run: |
         mkdir -p .build
-        cp -R libjpeg.xcframework libtiff.xcframework libxslt.xcframework libexslt.xcframework .build/
+        cp -R libjpeg.xcframework libtiff.xcframework libxslt.xcframework libexslt.xcframework libfftw*.xcframework .build/
         echo '| xcframework | slice | archs |' >> "$GITHUB_STEP_SUMMARY"
         echo '| --- | --- | --- |' >> "$GITHUB_STEP_SUMMARY"
-        for name in libpng freetype harfbuzz libjpeg libtiff libxslt libexslt; do
-          if [[ $name != libjpeg && $name != libtiff && $name != libxslt && $name != libexslt ]]; then
+        for name in libpng freetype harfbuzz libjpeg libtiff libxslt libexslt libfftw3 libfftw3_threads libfftw3f libfftw3f_threads libfftw3l libfftw3l_threads; do
+          if [[ $name != libjpeg && $name != libtiff && $name != libxslt && $name != libexslt && $name != libfftw* ]]; then
             xcodebuild -create-xcframework \
               -framework "build/Release-iphoneos/$name.framework" \
               -framework "build/Release-iphonesimulator/$name.framework" \
@@ -87,7 +88,7 @@ jobs:
             [{id: "ios-arm64", archs: ["arm64"]}, {id: "ios-arm64_x86_64-simulator", archs: ["arm64", "x86_64"]}]' >/dev/null
           for slice in ios-arm64 ios-arm64_x86_64-simulator; do
             bin="$xcf/$slice/$name.framework/$name"
-            if [[ $name == libjpeg || $name == libtiff || $name == libxslt || $name == libexslt ]]; then
+            if [[ $name == libjpeg || $name == libtiff || $name == libxslt || $name == libexslt || $name == libfftw* ]]; then
               bin="$xcf/$slice/$name.a"
             fi
             archs=$(lipo -archs "$bin")
@@ -96,10 +97,11 @@ jobs:
               *) echo "::error::Unexpected slice $slice: $archs"; exit 1 ;;
             esac
             echo "| $name | $slice | $archs |" >> "$GITHUB_STEP_SUMMARY"
-            if [[ $name == libjpeg || $name == libtiff || $name == libxslt || $name == libexslt ]]; then
+            if [[ $name == libjpeg || $name == libtiff || $name == libxslt || $name == libexslt || $name == libfftw* ]]; then
               # Inspect every archive member; the framework audit accepts dylibs only.
               expected_platform=2
               max_minos=11
+              if [[ $name == libfftw* ]]; then max_minos=14; fi
               if [[ $slice == *simulator ]]; then expected_platform=7; max_minos=14; fi
               xcrun otool -l "$bin" > ".build/$name-$slice-load-commands.txt"
               awk -v expected="$expected_platform" -v maximum="$max_minos" '
@@ -233,7 +235,7 @@ jobs:
 
   science:
     name: Scientific Python packages for iOS
-    needs: [fortran, gis]
+    needs: [build, fortran, gis]
     runs-on: macos-26
     timeout-minutes: 240
     env:
@@ -250,6 +252,10 @@ jobs:
       with:
         name: gis
         path: .build/science-inputs
+    - uses: actions/download-artifact@v8
+      with:
+        name: xcframeworks
+        path: .build/science-inputs
     - name: Toolchain and pinned Python recipes
       run: |
         brew update
@@ -258,16 +264,23 @@ jobs:
         test "$flang_version" = "$(cat .build/science-inputs/flang-version.txt)"
         (cd .build/science-inputs && shasum -a 256 -c openblas-checksums.txt)
         (cd .build/science-inputs && shasum -a 256 -c gis-checksums.txt)
-        for name in openblas flang_rt libgeos libgeos_c; do unzip -q ".build/science-inputs/$name.xcframework.zip" -d .build/science-inputs; done
+        (cd .build/science-inputs && shasum -a 256 -c checksums.txt)
+        for name in openblas flang_rt libgeos libgeos_c libproj libgdal freetype libpng libjpeg libtiff libfftw3 libfftw3_threads libfftw3f libfftw3f_threads libfftw3l libfftw3l_threads; do unzip -q ".build/science-inputs/$name.xcframework.zip" -d .build/science-inputs; done
         git init .build/cpython
-        git -C .build/cpython fetch --depth 1 https://github.com/demrom/cpython.git ead348347310524c106a31cc2ef67801a97da3d2
+        git -C .build/cpython fetch --depth 1 https://github.com/demrom/cpython.git 8a25b3d596629adea64159304a08a865c710af5b
         git -C .build/cpython checkout --detach FETCH_HEAD
-        test "$(git -C .build/cpython rev-parse HEAD)" = ead348347310524c106a31cc2ef67801a97da3d2
+        test "$(git -C .build/cpython rev-parse HEAD)" = 8a25b3d596629adea64159304a08a865c710af5b
         git -C .build/cpython submodule update --init --recursive --depth 1 packages/numpy packages/cython packages/pybind11
+        git -C .build/cpython config submodule.packages/statsmodels.url https://github.com/statsmodels/statsmodels.git
+        git -C .build/cpython submodule update --init --recursive --depth 1 packages/word_cloud packages/statsmodels
     - name: Build core Python and scientific frameworks
       run: |
         nice -n 15 bash .build/cpython/scripts/build-ci-ios.sh "$PWD/.build/python-core"
         nice -n 15 bash .build/cpython/scripts/build-ci-science.sh "$PWD/.build/python-core" "$PWD/.build/science-inputs"
+        nice -n 15 bash .build/cpython/scripts/build-ci-full.sh "$PWD/.build/python-core" "$PWD/.build/cpython/.build/science" "$PWD/.build/science-inputs"
+        cp .build/cpython/.build/full/dist/*.xcframework.zip .build/cpython/.build/full/dist/python-full.tar.gz .build/cpython/.build/science/dist/
+        cat .build/cpython/.build/full/dist/full-checksums.txt >> .build/cpython/.build/science/dist/science-checksums.txt
+        cp .build/cpython/.build/science/dist/science-checksums.txt .build/cpython/.build/science/dist/science-release.md
     - name: Run target Python numerical checks on Simulator
       run: |
         science="$PWD/.build/cpython/.build/science"
@@ -311,6 +324,7 @@ jobs:
         path: |
           .build/cpython/.build/science/dist/*.xcframework.zip
           .build/cpython/.build/science/dist/python-science.tar.gz
+          .build/cpython/.build/science/dist/python-full.tar.gz
           .build/cpython/.build/science/dist/science-checksums.txt
           .build/cpython/.build/science/dist/science-release.md
           .build/cpython/.build/science/dist/*-ios-*.txt
@@ -424,9 +438,9 @@ jobs:
         cp dist/checksums.txt dist/release.md
         if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
           gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-            dist/*.xcframework.zip dist/python-science.tar.gz dist/proj-data.tar.gz dist/checksums.txt
+            dist/*.xcframework.zip dist/python-science.tar.gz dist/python-full.tar.gz dist/proj-data.tar.gz dist/checksums.txt
         else
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
             --verify-tag --latest=false --title "Release $GITHUB_REF_NAME" --notes-file dist/release.md \
-            dist/*.xcframework.zip dist/python-science.tar.gz dist/proj-data.tar.gz dist/checksums.txt
+            dist/*.xcframework.zip dist/python-science.tar.gz dist/python-full.tar.gz dist/proj-data.tar.gz dist/checksums.txt
         fi
