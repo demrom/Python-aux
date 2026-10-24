@@ -38,7 +38,7 @@ Update each consuming `binaryTarget` URL and checksum with the new release and t
 
 ## OpenBLAS with Fortran LAPACK
 
-The Fortran CI job builds arm64 device and universal arm64/x86_64 Simulator frameworks with Homebrew Flang and the LLVM runtime sources from the same release. It compiles LAPACK's `dpotrf.f` for each platform, links OpenBLAS against a shared `flang_rt.framework`, and runs Cholesky, linear-system and Fortran `dsyev` eigenvalue checks on the arm64 Simulator. The x86_64 Simulator consumer is compiled and linked only. The `openblas` artifact contains `openblas.xcframework.zip`, `flang_rt.xcframework.zip` and their SwiftPM checksums; tag releases include them alongside the other libraries. Embed both frameworks in consuming apps; both require iOS 14.
+The Fortran CI job builds arm64 device and universal arm64/x86_64 Simulator frameworks with Homebrew Flang and the LLVM runtime sources from the same release. It compiles LAPACK's `dpotrf.f` for each platform, links OpenBLAS against a shared `flang_rt.framework`, and runs Cholesky, linear-system and Fortran `dsyev` eigenvalue checks on the arm64 Simulator. The x86_64 Simulator consumer is compiled and linked only. The `openblas` artifact contains `openblas.xcframework.zip`, `flang_rt.xcframework.zip`, `libomp.xcframework.zip` and their SwiftPM checksums; tag releases include them alongside the other libraries. Embed OpenBLAS and Flang runtime in consuming apps; scikit-learn also needs OpenMP. All three target iOS 14.
 
 Run `nice -n 15 bash build_flang_runtime.sh <llvm-source> <runtime-build>`, then `nice -n 15 bash build_openblas_flang.sh <runtime-build> <openblas-build>`. The workflow checks out the LLVM release matching the installed Flang compiler; the runtime uses Xcode's C++ compiler and SDK headers. Both scripts use four build jobs. The x86_64 Simulator uses this revision's CORE2 cross-build configuration. The runtime patch makes command-line execution report unsupported on iOS and rejects executable trampolines there. LAPACK uses neither facility.
 
@@ -52,9 +52,15 @@ The Simulator consumer checks linear solves, eigenvalues, Cholesky, SVD, seeded 
 
 ## Full Python packages
 
-After the science build, CI runs the pinned CPython full-package recipes for graphics, astronomy, GIS bindings, notebook support, Qutip, FFT, optimization, CoreML, OpenCV, wordcloud and statsmodels. Their 44 framework products and `python-full.tar.gz` join the 56 science frameworks and `python-science.tar.gz` in the `science` artifact under one `science-checksums.txt` manifest. These are the full-app inputs alongside the core and mini artifacts.
+After the science build, CI runs the pinned CPython full-package recipes for graphics, astronomy, GIS bindings, notebook support, Qutip, FFT, optimization, CoreML, OpenCV, wordcloud and statsmodels. Scikit-learn and PyZMQ add parallel estimators and messaging support. Their 114 framework products and `python-full.tar.gz` join the 56 science frameworks and `python-science.tar.gz` in the `science` artifact under one `science-checksums.txt` manifest. These are the full-app inputs alongside the core and mini artifacts. CI builds the mini recipes to supply CFFI to the PyZMQ consumer, then checks scikit-learn estimators, NumPy ufuncs from worker threads and PyZMQ PAIR byte roundtrips with descriptor cleanup. Both checks run across two interpreter entries in one process.
 
 `build_fftw.sh` builds FFTW 3.3.11 from its checksum-verified official source archive, retaining double, single and long-double precision and their pthread libraries. Run `nice -n 15 bash build_fftw.sh iphoneos iphonesimulator-arm64 iphonesimulator-x86_64` to produce the six static xcframeworks used by PyFFTW and CVXOPT. Each contains arm64 device and universal Simulator slices targeting iOS 14. The native CI artifact includes these six libraries alongside its existing codec and XSLT products.
+
+## OpenMP and ZeroMQ
+
+`build_libomp.sh <llvm-source> <build-directory>` builds the OpenMP runtime from the LLVM release selected by the Fortran job. The patch keeps LLVM from passing the ELF-only `-Wl,-z,defs` flag to Apple's linker for iOS; the job checks an OpenMP parallel reduction on arm64 Simulator and links the x86_64 consumer. Scikit-learn links this target framework explicitly so Meson cannot select the host's Homebrew OpenMP library.
+
+`build_libzmq.sh` builds the pinned ZeroMQ 4.3.5 submodule for arm64 device and both Simulator architectures, then packages a universal Simulator slice. It retains the legacy build's disabled TLS, libsodium, CURVE and draft APIs. The native job checks a public PAIR socket consumer on arm64 Simulator and links x86_64. PyZMQ 27.2.0 uses the CFFI backend and this framework, with bundling disabled and strict target Python linkage. Embed `libzmq.framework` alongside the Python modules.
 
 ## GIS frameworks
 

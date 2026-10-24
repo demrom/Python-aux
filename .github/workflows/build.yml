@@ -31,8 +31,8 @@ jobs:
         xcodebuild -version
         df -h .
         brew install autoconf automake libtool pkgconf cmake
-        git submodule update --init --depth 1 harfbuzz libxslt
-        git submodule status harfbuzz libxslt
+        git submodule update --init --depth 1 harfbuzz libxslt libzmq
+        git submodule status harfbuzz libxslt libzmq
 
     - name: Build libraries
       run: |
@@ -40,10 +40,11 @@ jobs:
         nice -n 15 bash build_freetype.sh
         nice -n 15 bash build_libjpg.sh
         nice -n 15 bash build_libtiff.sh
+        nice -n 15 bash build_libzmq.sh
         nice -n 15 bash build_libxslt.sh
         nice -n 15 bash build_fftw.sh iphoneos iphonesimulator-arm64 iphonesimulator-x86_64
 
-    - name: Link codec and XSLT consumers and run on arm64 Simulator
+    - name: Link codec, XSLT and ZeroMQ consumers and run on arm64 Simulator
       run: |
         mkdir -p .build
         for arch in arm64 x86_64; do
@@ -61,6 +62,12 @@ jobs:
             libexslt.xcframework/ios-arm64_x86_64-simulator/libexslt.a \
             libxslt.xcframework/ios-arm64_x86_64-simulator/libxslt.a -lxml2 -o ".build/xslt-$arch"
         done
+        for arch in arm64 x86_64; do
+          framework="$PWD/libzmq.xcframework/ios-arm64_x86_64-simulator"
+          xcrun --sdk iphonesimulator clang -target "$arch-apple-ios14.0-simulator" tests/zmq.c \
+            -I"$framework/libzmq.framework/Headers" -F"$framework" -framework libzmq \
+            -Wl,-rpath,"$framework" -o ".build/zmq-$arch"
+        done
         runtime=$(xcrun simctl list runtimes -j | jq -r '.runtimes[] | select(.isAvailable and (.identifier | contains("iOS"))) | .identifier' | tail -n 1)
         device=$(xcrun simctl create Python-aux-codecs com.apple.CoreSimulator.SimDeviceType.iPhone-17 "$runtime")
         trap 'xcrun simctl shutdown "$device"; xcrun simctl delete "$device"' EXIT
@@ -68,15 +75,16 @@ jobs:
         xcrun simctl bootstatus "$device" -b
         xcrun simctl spawn "$device" "$PWD/.build/codecs-arm64"
         xcrun simctl spawn "$device" "$PWD/.build/xslt-arm64"
+        xcrun simctl spawn "$device" "$PWD/.build/zmq-arm64"
 
     - name: Package, verify slices and checksum
       run: |
         mkdir -p .build
-        cp -R libjpeg.xcframework libtiff.xcframework libxslt.xcframework libexslt.xcframework libfftw*.xcframework .build/
+        cp -R libjpeg.xcframework libtiff.xcframework libxslt.xcframework libexslt.xcframework libfftw*.xcframework libzmq.xcframework .build/
         echo '| xcframework | slice | archs |' >> "$GITHUB_STEP_SUMMARY"
         echo '| --- | --- | --- |' >> "$GITHUB_STEP_SUMMARY"
-        for name in libpng freetype harfbuzz libjpeg libtiff libxslt libexslt libfftw3 libfftw3_threads libfftw3f libfftw3f_threads libfftw3l libfftw3l_threads; do
-          if [[ $name != libjpeg && $name != libtiff && $name != libxslt && $name != libexslt && $name != libfftw* ]]; then
+        for name in libpng freetype harfbuzz libjpeg libtiff libxslt libexslt libzmq libfftw3 libfftw3_threads libfftw3f libfftw3f_threads libfftw3l libfftw3l_threads; do
+          if [[ $name != libjpeg && $name != libtiff && $name != libxslt && $name != libexslt && $name != libzmq && $name != libfftw* ]]; then
             xcodebuild -create-xcframework \
               -framework "build/Release-iphoneos/$name.framework" \
               -framework "build/Release-iphonesimulator/$name.framework" \
@@ -159,7 +167,7 @@ jobs:
         mkdir -p .build
         printf '%s\n' "$flang_version" > .build/flang-version.txt
         git clone --filter=blob:none --sparse --depth 1 --branch "llvmorg-$flang_version" https://github.com/llvm/llvm-project.git .build/llvm
-        git -C .build/llvm sparse-checkout set flang-rt cmake llvm/cmake llvm/include/llvm/Frontend flang/include flang/cmake runtimes llvm/utils/llvm-lit flang/lib/Decimal libc/shared libc/src/__support
+        git -C .build/llvm sparse-checkout set flang-rt openmp third-party/unittest cmake llvm/cmake llvm/include/llvm/Frontend flang/include flang/cmake runtimes llvm/utils/llvm-lit flang/lib/Decimal libc/shared libc/src/__support
         curl -fL --retry 3 https://raw.githubusercontent.com/Reference-LAPACK/lapack/v3.12.1/SRC/dpotrf.f -o .build/dpotrf.f
         echo 'ea50dbb7c75ca65c4e388ec63b00bc0f3ebbaf9d8d358644d727319007df972a  .build/dpotrf.f' | shasum -a 256 -c -
 
@@ -172,6 +180,7 @@ jobs:
         xcrun vtool -show-build .build/dpotrf-ios.o
         xcrun vtool -show-build .build/dpotrf-simulator.o
         nice -n 15 bash build_flang_runtime.sh .build/llvm .build/runtime
+        nice -n 15 bash build_libomp.sh .build/llvm .build/libomp
 
     - name: Build and link OpenBLAS for both platforms
       run: nice -n 15 bash build_openblas_flang.sh .build/runtime .build/openblas
@@ -186,6 +195,10 @@ jobs:
             ".build/runtime-probe-$arch.o" \
             -F"$framework" -framework openblas -F"$PWD/.build/runtime/iphonesimulator-universal" -framework flang_rt \
             -Wl,-rpath,"$framework" -Wl,-rpath,"$PWD/.build/runtime/iphonesimulator-universal" -o ".build/lapack-test-$arch"
+          xcrun --sdk iphonesimulator clang -target "$arch-apple-ios14.0-simulator" tests/openmp.c \
+            -Xpreprocessor -fopenmp -I .build/libomp/iphonesimulator-universal/libomp.framework/Headers \
+            -F"$PWD/.build/libomp/iphonesimulator-universal" -framework libomp \
+            -Wl,-rpath,"$PWD/.build/libomp/iphonesimulator-universal" -o ".build/openmp-test-$arch"
         done
         runtime=$(xcrun simctl list runtimes -j | jq -r '.runtimes[] | select(.isAvailable and (.identifier | contains("iOS"))) | .identifier' | tail -n 1)
         device=$(xcrun simctl create OpenBLAS-LAPACK com.apple.CoreSimulator.SimDeviceType.iPhone-17 "$runtime")
@@ -193,6 +206,7 @@ jobs:
         xcrun simctl boot "$device"
         xcrun simctl bootstatus "$device" -b
         xcrun simctl spawn "$device" "$PWD/.build/lapack-test-arm64"
+        xcrun simctl spawn "$device" "$PWD/.build/openmp-test-arm64"
 
     - name: Package and checksum
       run: |
@@ -204,7 +218,11 @@ jobs:
           -framework "$PWD/.build/runtime/iphoneos/flang_rt.framework" \
           -framework "$PWD/.build/runtime/iphonesimulator-universal/flang_rt.framework" \
           -output .build/flang_rt.xcframework
-        for name in openblas flang_rt; do
+        xcodebuild -create-xcframework \
+          -framework "$PWD/.build/libomp/iphoneos/libomp.framework" \
+          -framework "$PWD/.build/libomp/iphonesimulator-universal/libomp.framework" \
+          -output .build/libomp.xcframework
+        for name in openblas flang_rt libomp; do
           for slice in ios-arm64 ios-arm64_x86_64-simulator; do
             bin=".build/$name.xcframework/$slice/$name.framework/$name"
             if [[ $slice == ios-arm64 ]]; then
@@ -217,7 +235,7 @@ jobs:
             if otool -L "$bin" | grep $'\t' | grep -E '/opt/homebrew|/usr/local|/Users/runner'; then exit 1; fi
           done
         done
-        for name in openblas flang_rt; do
+        for name in openblas flang_rt libomp; do
           (cd .build && zip --symlinks -rq "$name.xcframework.zip" "$name.xcframework")
           sum=$(swift package compute-checksum ".build/$name.xcframework.zip")
           echo "$sum  $name.xcframework.zip"
@@ -230,6 +248,7 @@ jobs:
         path: |
           .build/openblas.xcframework.zip
           .build/flang_rt.xcframework.zip
+          .build/libomp.xcframework.zip
           .build/openblas-checksums.txt
           .build/flang-version.txt
 
@@ -265,17 +284,18 @@ jobs:
         (cd .build/science-inputs && shasum -a 256 -c openblas-checksums.txt)
         (cd .build/science-inputs && shasum -a 256 -c gis-checksums.txt)
         (cd .build/science-inputs && shasum -a 256 -c checksums.txt)
-        for name in openblas flang_rt libgeos libgeos_c libproj libgdal freetype libpng libjpeg libtiff libfftw3 libfftw3_threads libfftw3f libfftw3f_threads libfftw3l libfftw3l_threads; do unzip -q ".build/science-inputs/$name.xcframework.zip" -d .build/science-inputs; done
+        for name in openblas flang_rt libomp libzmq libxslt libexslt libgeos libgeos_c libproj libgdal freetype libpng libjpeg libtiff libfftw3 libfftw3_threads libfftw3f libfftw3f_threads libfftw3l libfftw3l_threads; do unzip -q ".build/science-inputs/$name.xcframework.zip" -d .build/science-inputs; done
         git init .build/cpython
-        git -C .build/cpython fetch --depth 1 https://github.com/demrom/cpython.git 8a25b3d596629adea64159304a08a865c710af5b
+        git -C .build/cpython fetch --depth 1 https://github.com/demrom/cpython.git abda29f22fd8d8002aa71d03343bd8eb420706aa
         git -C .build/cpython checkout --detach FETCH_HEAD
-        test "$(git -C .build/cpython rev-parse HEAD)" = 8a25b3d596629adea64159304a08a865c710af5b
+        test "$(git -C .build/cpython rev-parse HEAD)" = abda29f22fd8d8002aa71d03343bd8eb420706aa
         git -C .build/cpython submodule update --init --recursive --depth 1 packages/numpy packages/cython packages/pybind11
         git -C .build/cpython config submodule.packages/statsmodels.url https://github.com/statsmodels/statsmodels.git
-        git -C .build/cpython submodule update --init --recursive --depth 1 packages/word_cloud packages/statsmodels
+        git -C .build/cpython submodule update --init --recursive --depth 1 packages/word_cloud packages/statsmodels packages/scikit-learn
     - name: Build core Python and scientific frameworks
       run: |
         nice -n 15 bash .build/cpython/scripts/build-ci-ios.sh "$PWD/.build/python-core"
+        nice -n 15 bash .build/cpython/scripts/build-ci-mini.sh "$PWD/.build/python-core" "$PWD/.build/science-inputs"
         nice -n 15 bash .build/cpython/scripts/build-ci-science.sh "$PWD/.build/python-core" "$PWD/.build/science-inputs"
         nice -n 15 bash .build/cpython/scripts/build-ci-full.sh "$PWD/.build/python-core" "$PWD/.build/cpython/.build/science" "$PWD/.build/science-inputs"
         cp .build/cpython/.build/full/dist/*.xcframework.zip .build/cpython/.build/full/dist/python-full.tar.gz .build/cpython/.build/science/dist/
@@ -287,7 +307,11 @@ jobs:
         core="$PWD/.build/python-core"
         consumer="$science/consumer"
         mkdir -p "$consumer/Frameworks"
+        tar -xzf "$PWD/.build/cpython/.build/mini/dist/python-mini.tar.gz" -C "$consumer"
         tar -xzf "$science/dist/python-science.tar.gz" -C "$consumer"
+        tar -xzf "$science/dist/python-full.tar.gz" -C "$consumer"
+        unzip -q "$PWD/.build/cpython/.build/mini/dist/Python-_cffi_backend.xcframework.zip" -d "$consumer"
+        cp -R "$consumer/Python-_cffi_backend.xcframework/ios-arm64_x86_64-simulator/Python-_cffi_backend.framework" "$consumer/Frameworks/"
         for archive in "$science/dist/"*.xcframework.zip; do
           unzip -q "$archive" -d "$consumer"
           name=$(basename "$archive" .xcframework.zip)
@@ -316,6 +340,22 @@ jobs:
           test "$(grep -c -x -F "$result" "$science/dist/science-runtime.log")" = 2
         done
         grep -q '^SCIENCE_REENTRY_PASSED$' "$science/dist/science-runtime.log"
+        status=0
+        SIMCTL_CHILD_PYTHONHOME="$core/install/iphonesimulator" \
+        SIMCTL_CHILD_PYTHONPATH="$consumer/iphonesimulator/lib/python3.13/site-packages" \
+        SIMCTL_CHILD_APPDIR="$consumer" \
+        SIMCTL_CHILD_OMP_NUM_THREADS=2 SIMCTL_CHILD_OPENBLAS_NUM_THREADS=2 \
+        SIMCTL_CHILD_COLUMNS=80 SIMCTL_CHILD_LINES=24 \
+        SIMCTL_CHILD_DYLD_FRAMEWORK_PATH="$core/install/iphonesimulator:$science/iphonesimulator/native:$PWD/.build/cpython/.build/full/iphonesimulator/native" \
+          xcrun simctl spawn "$device" "$science/science-python-arm64" "$PWD/.build/cpython/iOS/tests/full.py" > "$science/dist/full-runtime.log" 2>&1 || status=$?
+        cat "$science/dist/full-runtime.log"
+        test "$status" = 0
+        for result in \
+          "Scikit-learn parallel estimators and NumPy worker ufuncs PASS" \
+          "PyZMQ CFFI PAIR bytes and descriptor cleanup PASS"; do
+          test "$(grep -c -x -F "$result" "$science/dist/full-runtime.log")" = 2
+        done
+        grep -q '^SCIENCE_REENTRY_PASSED$' "$science/dist/full-runtime.log"
     - uses: actions/upload-artifact@v7
       with:
         name: science
@@ -329,13 +369,16 @@ jobs:
           .build/cpython/.build/science/dist/science-release.md
           .build/cpython/.build/science/dist/*-ios-*.txt
           .build/cpython/.build/science/dist/science-runtime.log
+          .build/cpython/.build/science/dist/full-runtime.log
 
     - uses: actions/upload-artifact@v7
       if: failure()
       with:
         name: science-failure-log
         if-no-files-found: ignore
-        path: .build/cpython/.build/science/dist/science-runtime.log
+        path: |
+          .build/cpython/.build/science/dist/science-runtime.log
+          .build/cpython/.build/science/dist/full-runtime.log
 
   gis:
     name: Building GIS frameworks
