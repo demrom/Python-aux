@@ -232,8 +232,8 @@ jobs:
           .build/flang-version.txt
 
   science:
-    name: NumPy and SciPy for iOS
-    needs: fortran
+    name: Scientific Python packages for iOS
+    needs: [fortran, gis]
     runs-on: macos-26
     timeout-minutes: 240
     env:
@@ -246,6 +246,10 @@ jobs:
       with:
         name: openblas
         path: .build/science-inputs
+    - uses: actions/download-artifact@v8
+      with:
+        name: gis
+        path: .build/science-inputs
     - name: Toolchain and pinned Python recipes
       run: |
         brew update
@@ -253,11 +257,12 @@ jobs:
         flang_version=$(flang --version | awk 'NR == 1 {for (i = 1; i < NF; i++) if ($i == "version") {print $(i+1); exit}}')
         test "$flang_version" = "$(cat .build/science-inputs/flang-version.txt)"
         (cd .build/science-inputs && shasum -a 256 -c openblas-checksums.txt)
-        for name in openblas flang_rt; do unzip -q ".build/science-inputs/$name.xcframework.zip" -d .build/science-inputs; done
+        (cd .build/science-inputs && shasum -a 256 -c gis-checksums.txt)
+        for name in openblas flang_rt libgeos libgeos_c; do unzip -q ".build/science-inputs/$name.xcframework.zip" -d .build/science-inputs; done
         git init .build/cpython
-        git -C .build/cpython fetch --depth 1 https://github.com/demrom/cpython.git 0711fa5bfe722c444e4f0eb5d820652081e56be7
+        git -C .build/cpython fetch --depth 1 https://github.com/demrom/cpython.git ead348347310524c106a31cc2ef67801a97da3d2
         git -C .build/cpython checkout --detach FETCH_HEAD
-        test "$(git -C .build/cpython rev-parse HEAD)" = 0711fa5bfe722c444e4f0eb5d820652081e56be7
+        test "$(git -C .build/cpython rev-parse HEAD)" = ead348347310524c106a31cc2ef67801a97da3d2
         git -C .build/cpython submodule update --init --recursive --depth 1 packages/numpy packages/cython packages/pybind11
     - name: Build core Python and scientific frameworks
       run: |
@@ -292,7 +297,9 @@ jobs:
         for result in \
           "NumPy solve, eigenvalues, Cholesky and SVD PASS" \
           "SciPy LAPACK, special functions, quadrature, spline and four PROPACK types PASS" \
-          "SciPy statistics, optimization, signal, IO and ODR imports PASS"; do
+          "SciPy statistics, optimization, signal, IO and ODR imports PASS" \
+          "Pandas groupby, rolling, Timestamp and rank PASS" \
+          "Shapely geometry, union, buffer and pickle PASS"; do
           test "$(grep -c -x -F "$result" "$science/dist/science-runtime.log")" = 2
         done
         grep -q '^SCIENCE_REENTRY_PASSED$' "$science/dist/science-runtime.log"

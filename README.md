@@ -46,7 +46,7 @@ This build includes the Fortran BLAS and LAPACK APIs and CBLAS. LAPACKE is disab
 
 ## NumPy and SciPy
 
-The science CI job runs the pinned `demrom/cpython` package recipes after the Fortran job. It builds Python 3.13 from source, then NumPy 2.3.1 and SciPy 1.16.1 for arm64 device and both Simulator architectures using the matching Flang runtime. It preserves a-Shell's eight scientific framework products and `.fwork` module aliases. The `science` artifact contains their ZIPs, the pure Python packages in `python-science.tar.gz`, and `science-checksums.txt`.
+The science CI job runs the pinned `demrom/cpython` package recipes after the Fortran and GIS jobs. It builds Python 3.13 from source, then NumPy 2.3.1, SciPy 1.16.1, Pandas 3.1.0 and Shapely 2.2.0 for arm64 device and both Simulator architectures. The recipes use Cython 3.3 with the fixes in cython/cython#8082, cython/cython#8083 and cython/cython#8084, full module cleanup, heap types and module state disabled for interpreter re-entry. They preserve the eight NumPy/SciPy framework products and add 45 Pandas and three Shapely products, with `.fwork` module aliases. The `science` artifact contains their ZIPs, the pure Python packages in `python-science.tar.gz`, and `science-checksums.txt`.
 
 The Simulator consumer checks linear solves, eigenvalues, Cholesky, SVD, special functions, quadrature, interpolation and PROPACK with real and complex single/double precision. CI executes the packaged arm64 slices, audits the x86_64 slices statically and links an x86_64 Python launcher. These checks run on two sequential command threads in one process through `Py_BytesMain` to exercise interpreter re-entry; CI requires a final marker from the C launcher. App launch checks remain separate.
 
