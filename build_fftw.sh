@@ -1,80 +1,55 @@
-# Required with Xcode 12 beta:
-export M4=$(xcrun -f m4)
-OSX_SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
-IOS_SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
-SIM_SDKROOT=$(xcrun --sdk iphonesimulator --show-sdk-path)
+#!/bin/bash
+set -euo pipefail
 
-curl -OL http://www.fftw.org/fftw-3.3.10.tar.gz 
-tar xzf fftw-3.3.10.tar.gz 
-rm fftw-3.3.10.tar.gz 
+root=$(cd "$(dirname "$0")" && pwd)
+build=$root/.build/fftw
+archive=$build/fftw-3.3.11.tar.gz
+mkdir -p "$build"
+if [[ ! -f $archive ]]; then
+	curl -fL --retry 3 https://fftw.org/fftw-3.3.11.tar.gz -o "$archive.part"
+	mv "$archive.part" "$archive"
+fi
+printf '%s  %s\n' 5630c24cdeb33b131612f7eb4b1a9934234754f9f388ff8617458d0be6f239a1 "$archive" | shasum -a 256 -c -
+if [[ ! -d $build/fftw-3.3.11 ]]; then tar -xzf "$archive" -C "$build"; fi
+source_dir=$build/fftw-3.3.11
+minos=${IPHONEOS_DEPLOYMENT_TARGET:-14.0}
+if [[ $# == 0 ]]; then set -- macosx iphoneos iphonesimulator-arm64 iphonesimulator-x86_64; fi
+for target in "$@"; do
+	case $target in
+		macosx) sdk=macosx; triple=arm64-apple-macos11.0; host=aarch64-apple-darwin ;;
+		iphoneos) sdk=iphoneos; triple=arm64-apple-ios$minos; host=aarch64-apple-darwin ;;
+		iphonesimulator-arm64) sdk=iphonesimulator; triple=arm64-apple-ios$minos-simulator; host=aarch64-apple-darwin ;;
+		iphonesimulator-x86_64) sdk=iphonesimulator; triple=x86_64-apple-ios$minos-simulator; host=x86_64-apple-darwin ;;
+		*) echo "Unsupported FFTW target: $target" >&2; exit 1 ;;
+	esac
+	sdkroot=$(xcrun --sdk "$sdk" --show-sdk-path)
+	prefix=$build/$target/install
+	for precision in double float long-double; do
+		options=()
+		case $precision in float) options+=(--enable-float) ;; long-double) options+=(--enable-long-double) ;; esac
+		directory=$build/$target/$precision
+		mkdir -p "$directory"
+		pushd "$directory"
+		CC=clang CXX=clang++ CFLAGS="-target $triple -isysroot $sdkroot -O3" \
+		CPPFLAGS="-target $triple -isysroot $sdkroot" \
+		"$source_dir/configure" --build="$("$source_dir/config.guess")" --host="$host" \
+			--prefix="$prefix" --disable-shared --enable-static --disable-fortran \
+			--enable-threads "${options[@]}" cross_compiling=yes
+		make -j4
+		make install
+		popd
+	done
+done
 
-SOURCE_DIR=fftw-3.3.10
-pushd $SOURCE_DIR
-
-make distclean
-./configure CC=clang CXX=clang++ \
-	CFLAGS="-isysroot ${OSX_SDKROOT} -fembed-bitcode" \
-	CPPFLAGS="-isysroot ${OSX_SDKROOT} -fembed-bitcode" \
-	CXXFLAGS="-isysroot ${OSX_SDKROOT} -fembed-bitcode" \
-	F77="gfortran" --enable-threads
-make -j4 --quiet
-# in include: fftw3.h fftw3.f fftw3l.f03 fftw3q.f03
-# in lib: libfftw3.a
-
-mkdir -p build-macosx
-mkdir -p build-macosx/include
-cp .libs/libfftw3.a build-macosx
-cp threads/.libs/libfftw3_threads.a build-macosx
-cp api/fftw3.h api/fftw3.f api/fftw3l.f03 api/fftw3q.f03 build-macosx/include
-
-
-make distclean
-./configure CC=clang CXX=clang++ \
-	CFLAGS="-arch arm64 -miphoneos-version-min=14.0 -isysroot ${IOS_SDKROOT} -fembed-bitcode" \
-	CPPFLAGS="-arch arm64 -miphoneos-version-min=14.0 -isysroot ${IOS_SDKROOT} -fembed-bitcode" \
-	CXXFLAGS="-arch arm64 -miphoneos-version-min=14.0 -isysroot ${IOS_SDKROOT} -fembed-bitcode" \
-	F77="/usr/local/bin/aarch64-apple-darwin20-gfortran" \
-	--build=x86_64-apple-darwin --host=armv8-apple-darwin --enable-threads cross_compiling=yes
-make -j4 --quiet
-# in include: fftw3.h fftw3.f fftw3l.f03 fftw3q.f03
-# in lib: libfftw3.a
-
-mkdir -p build-iphoneos
-mkdir -p build-iphoneos/include
-cp .libs/libfftw3.a build-iphoneos
-cp threads/.libs/libfftw3_threads.a build-iphoneos
-cp api/fftw3.h api/fftw3.f api/fftw3l.f03 api/fftw3q.f03 build-iphoneos/include
-
-make distclean
-./configure CC=clang CXX=clang++ \
-        CFLAGS="-arch x86_64 -mios-simulator-version-min=14.0 -isysroot ${SIM_SDKROOT} -fembed-bitcode" \
-        CPPFLAGS="-arch x86_64 -mios-simulator-version-min=14.0 -isysroot ${SIM_SDKROOT} -fembed-bitcode" \
-        CXXFLAGS="-arch x86_64 -mios-simulator-version-min=14.0 -isysroot ${SIM_SDKROOT} -fembed-bitcode" \
-        --build=x86_64-apple-darwin --host=x86_64-apple-darwin --enable-threads cross_compiling=yes
-make -j4 --quiet
-mkdir -p build-iphonesimulator
-mkdir -p build-iphonesimulator/include
-cp .libs/libfftw3.a build-iphonesimulator
-cp threads/.libs/libfftw3_threads.a build-iphonesimulator
-cp api/fftw3.h api/fftw3.f api/fftw3l.f03 api/fftw3q.f03 build-iphonesimulator/include
-popd
-
-
-# then, merge them into XCframeworks:
-framework=libfftw3
-rm -rf $framework.xcframework
-xcodebuild -create-xcframework \
-	-library $SOURCE_DIR/build-macosx/libfftw3.a -headers $SOURCE_DIR/build-iphoneos/include \
-	-library $SOURCE_DIR/build-iphoneos/libfftw3.a -headers $SOURCE_DIR/build-iphoneos/include \
-	-library $SOURCE_DIR/build-iphonesimulator/libfftw3.a -headers $SOURCE_DIR/build-iphonesimulator/include \
-	-output $framework.xcframework
-
-framework=libfftw3_threads
-rm -rf $framework.xcframework
-xcodebuild -create-xcframework \
-	-library $SOURCE_DIR/build-macosx/libfftw3_threads.a  \
-	-library $SOURCE_DIR/build-iphoneos/libfftw3_threads.a  \
-	-library $SOURCE_DIR/build-iphonesimulator/libfftw3_threads.a  \
-	-output $framework.xcframework
-
-
+# Package only complete target sets; single-target invocations stage their static
+# libraries for Python consumers without replacing an existing XCFramework.
+if [[ -f $build/iphoneos/install/lib/libfftw3.a && -f $build/iphonesimulator-arm64/install/lib/libfftw3.a && -f $build/iphonesimulator-x86_64/install/lib/libfftw3.a ]]; then
+	mkdir -p "$build/simulator"
+	for name in fftw3 fftw3_threads fftw3f fftw3f_threads fftw3l fftw3l_threads; do
+		lipo -create "$build/iphonesimulator-arm64/install/lib/lib$name.a" "$build/iphonesimulator-x86_64/install/lib/lib$name.a" -output "$build/simulator/lib$name.a"
+		args=(-library "$build/iphoneos/install/lib/lib$name.a" -headers "$build/iphoneos/install/include" -library "$build/simulator/lib$name.a" -headers "$build/iphonesimulator-arm64/install/include")
+		if [[ -f $build/macosx/install/lib/lib$name.a ]]; then args+=(-library "$build/macosx/install/lib/lib$name.a" -headers "$build/macosx/install/include"); fi
+		rm -rf "$root/lib$name.xcframework"
+		xcodebuild -create-xcframework "${args[@]}" -output "$root/lib$name.xcframework"
+	done
+fi

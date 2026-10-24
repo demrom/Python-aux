@@ -44,11 +44,17 @@ Run `nice -n 15 bash build_flang_runtime.sh <llvm-source> <runtime-build>`, then
 
 This build includes the Fortran BLAS and LAPACK APIs and CBLAS. LAPACKE is disabled (`NO_LAPACKE=ON`). NumPy and SciPy use the Fortran LAPACK API.
 
-## NumPy and SciPy
+## Scientific Python packages
 
 The science CI job runs the pinned `demrom/cpython` package recipes after the Fortran and GIS jobs. It builds Python 3.13 from source, then NumPy 2.3.1, SciPy 1.16.1, Pandas 3.1.0 and Shapely 2.2.0 for arm64 device and both Simulator architectures. The recipes use Cython 3.3 with the fixes in cython/cython#8082, cython/cython#8083 and cython/cython#8084, full module cleanup, heap types and module state disabled for interpreter re-entry. They preserve the eight NumPy/SciPy framework products and add 45 Pandas and three Shapely products, with `.fwork` module aliases. The `science` artifact contains their ZIPs, the pure Python packages in `python-science.tar.gz`, and `science-checksums.txt`.
 
-The Simulator consumer checks linear solves, eigenvalues, Cholesky, SVD, special functions, quadrature, interpolation and PROPACK with real and complex single/double precision. CI executes the packaged arm64 slices, audits the x86_64 slices statically and links an x86_64 Python launcher. These checks run on two sequential command threads in one process through `Py_BytesMain` to exercise interpreter re-entry; CI requires a final marker from the C launcher. App launch checks remain separate.
+The Simulator consumer checks linear solves, eigenvalues, Cholesky, SVD, seeded random draws, special functions, quadrature, interpolation and PROPACK with real and complex single/double precision. It also checks Pandas groupby, rolling windows, timestamps and rank, and Shapely geometry, union, buffer and pickle handling. CI executes the packaged arm64 slices, audits the x86_64 slices statically and links an x86_64 Python launcher. These checks run on two sequential command threads in one process through `Py_BytesMain` to exercise interpreter re-entry; CI requires a final marker from the C launcher. App launch checks remain separate.
+
+## Full Python packages
+
+After the science build, CI runs the pinned CPython full-package recipes for graphics, astronomy, GIS bindings, notebook support, Qutip, FFT, optimization, CoreML, OpenCV, wordcloud and statsmodels. Their 44 framework products and `python-full.tar.gz` join the 56 science frameworks and `python-science.tar.gz` in the `science` artifact under one `science-checksums.txt` manifest. These are the full-app inputs alongside the core and mini artifacts.
+
+`build_fftw.sh` builds FFTW 3.3.11 from its checksum-verified official source archive, retaining double, single and long-double precision and their pthread libraries. Run `nice -n 15 bash build_fftw.sh iphoneos iphonesimulator-arm64 iphonesimulator-x86_64` to produce the six static xcframeworks used by PyFFTW and CVXOPT. Each contains arm64 device and universal Simulator slices targeting iOS 14. The native CI artifact includes these six libraries alongside its existing codec and XSLT products.
 
 ## GIS frameworks
 
